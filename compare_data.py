@@ -16,7 +16,7 @@ plt.grid(True)
 plt.show()
 
 #fft
-fs = 1000 
+fs = 12000 
 N = len(real)
 
 # Compute FFTs
