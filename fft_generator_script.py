@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-data = pd.read_csv("data.csv", header=None)
+data = pd.read_csv("gpt-4.1_data.csv", header=None)
 signal = data[0].values
 #sampling freq
 fs = 1000 
@@ -20,8 +20,8 @@ fft_magnitude = np.abs(fft_vals[:N // 2]) * 2 / N
 
 plt.figure(figsize=(16, 9))
 plt.subplot(2, 1, 1)
-plt.plot(t[:200], signal[:200]) 
-plt.title("Time-Domain Signal")
+plt.plot(t[:1000], signal[:1000]) 
+plt.title("Time-Domain Signal of GPT-4.1 Data")
 plt.xlabel("Time")
 plt.ylabel("Amplitude")
 plt.grid(True)
@@ -29,7 +29,7 @@ plt.grid(True)
 # Frequency-Domain Plot
 plt.subplot(2, 1, 2)
 plt.plot(positive_freqs, fft_magnitude)
-plt.title("FFT")
+plt.title("FFT of GPT-4.1 Data")
 plt.xlabel("Frequency")
 plt.ylabel("Magnitude")
 plt.grid(True)
