@@ -20,7 +20,7 @@ fft_magnitude = np.abs(fft_vals[:N // 2]) * 2 / N
 
 plt.figure(figsize=(16, 9))
 plt.subplot(2, 1, 1)
-plt.plot(t[:10000], signal[:10000]) 
+plt.plot(t[:200], signal[:200]) 
 plt.title("Time-Domain Signal")
 plt.xlabel("Time")
 plt.ylabel("Amplitude")

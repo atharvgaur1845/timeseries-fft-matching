@@ -1,0 +1,17 @@
+Firstly I have the original data, i plotted its time domain graph and fft graph so that to know frequency analysis of signal.
+Now I have followed two aproach to make synthetic data 
+
+1. Prompting already trained LLMs [GPT-4.1]
+    Prompt:""You are a data scientist working with 1D time-series data that follows a roughly sinusoidal pattern with some noise.
+
+    Below is a sequence of 1000 real-valued samples from a real-world signal. Your task is to:
+    1. Understand the pattern of the signal (amplitude, frequency, trends, noise).
+    2. Generate 1000 new synthetic samples that mimic the same characteristics (sinusoidal pattern with similar noise and variation).
+    3. Output ONLY the new synthetic data as a clean CSV column (no index, no headers, just one float per line).
+
+    Real Signal (first 1000 values):
+    [Values for original_data.csv]
+
+    Make sure the output maintains a natural, realistic variation — not exact repetition or clean sine wave — just like the original.""
+
+2. Training small transformer based LLM for data generation
