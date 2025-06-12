@@ -16,7 +16,7 @@ plt.grid(True)
 plt.show()
 
 #fft
-fs = 1000  # or your actual sampling frequency
+fs = 1000 
 N = len(real)
 
 # Compute FFTs
@@ -39,3 +39,13 @@ plt.ylabel("Magnitude")
 plt.legend()
 plt.grid(True)
 plt.show()
+
+#statistical comparison
+from scipy.stats import wasserstein_distance
+
+# Mean, std
+print("Real Mean:", np.mean(real), "Synthetic Mean:", np.mean(synthetic))
+print("Real Std:", np.std(real), "Synthetic Std:", np.std(synthetic))
+
+# EMD
+print("Wasserstein Distance:", wasserstein_distance(real_fft, synth_fft))
