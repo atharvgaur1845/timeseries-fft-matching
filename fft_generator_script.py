@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-data = pd.read_csv("gpt-4.1_data.csv", header=None)
+data = pd.read_csv("original_data.csv", header=None)
 signal = data[0].values
 #sampling freq
 fs = 1000 
