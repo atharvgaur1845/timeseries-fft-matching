@@ -44,8 +44,8 @@ plt.show()
 from scipy.stats import wasserstein_distance
 
 # Mean, std
-print("Real Mean:", np.mean(real), "Synthetic Mean:", np.mean(synthetic))
-print("Real Std:", np.std(real), "Synthetic Std:", np.std(synthetic))
+print("Real Mean:", np.mean(real), "\nSynthetic Mean:", np.mean(synthetic))
+print("Real Std:", np.std(real), "\nSynthetic Std:", np.std(synthetic))
 
 # EMD
-print("Wasserstein Distance:", wasserstein_distance(real_fft, synth_fft))
+print("\nWasserstein Distance:", wasserstein_distance(real_fft, synth_fft))
