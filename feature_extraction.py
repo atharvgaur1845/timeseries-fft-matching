@@ -78,4 +78,4 @@ def extract_features_from_csv(csv_file_path, json_file_path):
         json.dump(features_list, f, indent=4)
 
 #calling the function
-extract_features_from_csv('.csv', 'features.json')
+extract_features_from_csv('original_data.csv', 'features.json')
