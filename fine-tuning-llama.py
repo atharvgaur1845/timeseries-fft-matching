@@ -23,7 +23,7 @@ import warnings
 warnings.filterwarnings("ignore")
 class LlamaFineTuner:
     def __init__(self):
-        self.model_id = "meta-llama/Llama-3.1-8B-Instruct"
+        self.model_id = "meta-llama/Llama-3.2-3B-Instruct"
         self.tokenizer = None
         self.model = None
         self.fine_tuned_model = None
