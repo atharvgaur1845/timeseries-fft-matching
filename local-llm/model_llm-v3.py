@@ -129,12 +129,15 @@ def save_data_to_csv(data, filename):
     with open(filename, "w") as f:
         for v in data:
             f.write(f"{v}\n")
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 if __name__ == "__main__":
     csv_path = "original_data.csv"
     raw = load_amplitude_data_from_csv(csv_path, window_size=24)
     dataset = ContinuousSensorDataset(raw)
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
     model = ContinuousSensorModel(input_len=24, d_model=128, n_heads=4, n_layers=8, d_ff=256, dropout=0.1)
+    print(f"Model Parameters: {count_parameters(model):,}")
     train_continuous_model(model, dataloader, epochs=30, lr=1e-3)
     required_seeds = raw[:200]
     flat_generated = generate_bulk_synthetic_signal(model, required_seeds, target_total=4800)
