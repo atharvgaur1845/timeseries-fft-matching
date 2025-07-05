@@ -38,7 +38,7 @@ def load_amplitude_data_from_csv(csv_file_path, window_size=5, sensor_name="ampl
     return raw_sensor_data
 
 class ImprovedSensorTokenizer:
-    def __init__(self, num_bins=100):
+    def __init__(self, num_bins=200):
         self.num_bins = num_bins
         self.vocab = {}
         self.reverse_vocab = {}
@@ -372,14 +372,14 @@ if __name__ == "__main__":
     print(f"Vocabulary size: {tokenizer.vocab_size}")
     
     dataset = SensorDataset(sensor_data, tokenizer, max_length=128)
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
     
     model = SmallSensorLLM(
         vocab_size=tokenizer.vocab_size,
-        d_model=64,
+        d_model=128,
         n_heads=4,
-        n_layers=5,
-        d_ff=128,
+        n_layers=8,
+        d_ff=256,
         max_seq_len=128,
         dropout=0.1
     )
