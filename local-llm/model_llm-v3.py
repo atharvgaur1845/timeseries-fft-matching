@@ -112,25 +112,30 @@ def train_continuous_model(model, dataloader, epochs=30, lr=1e-3, spectral_weigh
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss / len(dataloader):.4f}")
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss / len(dataloader):.7f}")
     torch.save(model.state_dict(), "best_model.pth")
 
-def generate_synthetic_signal(model, seed, length=24):
+def generate_bulk_synthetic_signal(model, seeds, target_total=2400):
     device = next(model.parameters()).device
     model.eval()
+    all_generated = []
     with torch.no_grad():
-        input_seq = torch.tensor(seed, dtype=torch.float32).unsqueeze(0).to(device)
-        output = model(input_seq)
-        return output.squeeze(0).cpu().numpy()
-
+        input_seqs = torch.tensor(seeds, dtype=torch.float32).to(device)
+        predictions = model(input_seqs)
+        outputs = predictions.cpu().numpy()
+        all_generated.extend(outputs.reshape(-1))
+    return all_generated[:target_total]
+def save_data_to_csv(data, filename):
+    with open(filename, "w") as f:
+        for v in data:
+            f.write(f"{v}\n")
 if __name__ == "__main__":
     csv_path = "original_data.csv"
     raw = load_amplitude_data_from_csv(csv_path, window_size=24)
     dataset = ContinuousSensorDataset(raw)
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
-    model = ContinuousSensorModel(input_dim=24, d_model=128, n_heads=4, n_layers=8, d_ff=256, dropout=0.1)
+    model = ContinuousSensorModel(input_len=24, d_model=128, n_heads=4, n_layers=8, d_ff=256, dropout=0.1)
     train_continuous_model(model, dataloader, epochs=30, lr=1e-3)
-    sample = raw[0]
-    generated = generate_synthetic_signal(model, seed=sample)
-    df = pd.DataFrame(generated)
-    df.to_csv("local-llm-data-v3.csv", index=False, header=False)
+    required_seeds = raw[:100]
+    flat_generated = generate_bulk_synthetic_signal(model, required_seeds, target_total=2400)
+    save_data_to_csv(flat_generated, filename="local-llm/local-llm-data-v3.csv")
