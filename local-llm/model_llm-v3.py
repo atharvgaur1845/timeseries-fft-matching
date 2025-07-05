@@ -113,9 +113,9 @@ def train_continuous_model(model, dataloader, epochs=30, lr=1e-3, spectral_weigh
             optimizer.step()
             total_loss += loss.item()
         print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss / len(dataloader):.7f}")
-    torch.save(model.state_dict(), "best_model.pth")
+    torch.save(model.state_dict(), "local-llm/best_model.pth")
 
-def generate_bulk_synthetic_signal(model, seeds, target_total=2400):
+def generate_bulk_synthetic_signal(model, seeds, target_total=4800):
     device = next(model.parameters()).device
     model.eval()
     all_generated = []
@@ -136,6 +136,6 @@ if __name__ == "__main__":
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
     model = ContinuousSensorModel(input_len=24, d_model=128, n_heads=4, n_layers=8, d_ff=256, dropout=0.1)
     train_continuous_model(model, dataloader, epochs=30, lr=1e-3)
-    required_seeds = raw[:100]
-    flat_generated = generate_bulk_synthetic_signal(model, required_seeds, target_total=2400)
+    required_seeds = raw[:200]
+    flat_generated = generate_bulk_synthetic_signal(model, required_seeds, target_total=4800)
     save_data_to_csv(flat_generated, filename="local-llm/local-llm-data-v3.csv")
