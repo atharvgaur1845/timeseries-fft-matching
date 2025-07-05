@@ -1,13 +1,13 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-real = pd.read_csv("original_data.csv", header=None)[0].values
-synthetic = pd.read_csv("gpt2-fine-tuned-sensor-data.csv", header=None)[0].values.astype(float)
+real = pd.read_csv("local-llm-data-v1.csv", header=None)[0].values
+synthetic = pd.read_csv("local-llm-data-v2.csv", header=None)[0].values.astype(float)
 
 
 plt.figure(figsize=(14, 4))
-plt.plot(real[:1000], label='Real', alpha=0.7)
-plt.plot(synthetic[:1000], label='Synthetic Local LLM', alpha=0.7)
+plt.plot(real[:2000], label='Real', alpha=0.7)
+plt.plot(synthetic[:2000], label='Synthetic Local LLM', alpha=0.7)
 plt.title("Time-Domain Comparison")
 plt.xlabel("Sample Index")
 plt.ylabel("Amplitude")
@@ -30,7 +30,7 @@ real_freqs, real_fft = compute_fft(real, fs)
 synth_freqs, synth_fft = compute_fft(synthetic, fs)
 
 # Plot
-plt.figure(figsize=(14, 4))
+plt.figure(figsize=(16, 9))
 plt.plot(real_freqs, real_fft, label="Real FFT", alpha=0.7)
 plt.plot(synth_freqs, synth_fft, label="Synthetic FFT Local LLM", alpha=0.7)
 plt.title("FFT Magnitude Spectrum Comparison")
