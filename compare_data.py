@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 real = pd.read_csv("original_data.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm-data.csv", header=None)[0].values.astype(float)
+synthetic = pd.read_csv("gpt2-fine-tuned-sensor-data.csv", header=None)[0].values.astype(float)
 
 
 plt.figure(figsize=(14, 4))

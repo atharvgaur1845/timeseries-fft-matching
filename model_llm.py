@@ -179,7 +179,7 @@ class TransformerBlock(nn.Module):
         
         self.feed_forward = nn.Sequential(
             nn.Linear(d_model, d_ff),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(d_ff, d_model)
         )
         
@@ -273,7 +273,7 @@ def prepare_sensor_data(raw_data):
     
     return processed_data
 
-def train_model(model, dataloader, tokenizer, epochs=10, lr=0.0001):
+def train_model(model, dataloader, tokenizer, epochs=15, lr=0.0001):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     
@@ -318,7 +318,7 @@ def train_model(model, dataloader, tokenizer, epochs=10, lr=0.0001):
             print(f"Epoch {epoch+1}/{epochs}, Average Loss: {avg_loss:.4f}")
 
 def generate_synthetic_data(model, tokenizer, prompt_sample=None, 
-                          num_samples=5, max_length=100, temperature=0.8):
+                          num_samples=5, max_length=100, temperature=0.9):
     device = next(model.parameters()).device
     model.eval()
     
@@ -378,7 +378,7 @@ if __name__ == "__main__":
         vocab_size=tokenizer.vocab_size,
         d_model=64,
         n_heads=4,
-        n_layers=3,
+        n_layers=5,
         d_ff=128,
         max_seq_len=128,
         dropout=0.1
@@ -397,6 +397,12 @@ if __name__ == "__main__":
         temperature=0.8
     )
     
-    print("\nGenerated synthetic sensor data:")
-    for i, sample in enumerate(synthetic_data):
-        print(f"Sample {i+1}: {sample}")
+    def save_synthetic_data_to_csv(samples, filename="local-llm-data.csv"):
+        all_values = []
+        for sample in samples:
+            for sensor_name, values in sample.items():
+                all_values.extend(values)
+            df = pd.DataFrame(all_values)
+        df.to_csv(filename, index=False, header=False)
+        print(f"Saved {len(all_values)} values to {filename}")
+    save_synthetic_data_to_csv(synthetic_data)
