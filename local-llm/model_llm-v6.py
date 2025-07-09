@@ -36,6 +36,7 @@ def compute_time_domain_features(signal):
         'waveform_index': waveform_index,
         'pulse_index': pulse_index
     }
+
 def compute_frequency_domain_features(signal, fs):
     fft_vals = np.fft.fft(signal)
     fft_mag = np.abs(fft_vals)
@@ -50,6 +51,7 @@ def compute_frequency_domain_features(signal, fs):
     energy = np.sum(spectrum ** 2)
     peak = np.max(spectrum)
     flatness = np.exp(np.mean(np.log(spectrum + 1e-8))) / (np.mean(spectrum) + 1e-8)
+    
     return {
         'frequency_mean_value': np.mean(spectrum),
         'frequency_variance': np.var(spectrum),
@@ -69,7 +71,8 @@ def compute_frequency_domain_features(signal, fs):
         'spectral_peak': peak,
         'spectral_flatness': flatness
     }
-def compute_advanced_statistical_features(signal):
+
+def advanced_statistical_features(signal):
     return {
         'median': np.median(signal),
         'mad': np.median(np.abs(signal - np.median(signal))),
@@ -78,25 +81,28 @@ def compute_advanced_statistical_features(signal):
         'zero_crossing_rate': len(np.where(np.diff(np.signbit(signal)))[0]),
         'autocorrelation_lag1': np.corrcoef(signal[:-1], signal[1:])[0,1] if len(signal) > 1 else 0
     }
-def compute_spectrogram_features(signal, fs):
+def spectrogram_features(signal, fs):
     f, t, Sxx = scipy_signal.spectrogram(signal, fs)
     spectral_centroid = np.sum(f[:, np.newaxis] * Sxx, axis=0) / (np.sum(Sxx, axis=0) + 1e-8)
     spectral_bandwidth = np.sqrt(np.sum((f[:, np.newaxis] - spectral_centroid)**2 * Sxx, axis=0) / (np.sum(Sxx, axis=0) + 1e-8))
+    
     return {
         'spectral_centroid_time_avg': np.mean(spectral_centroid),
         'spectral_bandwidth_time_avg': np.mean(spectral_bandwidth),
         'spectral_contrast': np.mean(np.max(Sxx, axis=0) / (np.mean(Sxx, axis=0) + 1e-8))
     }
-def compute_nonlinear_features(signal):
+def nonlinear_features(signal):
     def _phi(m, r, data):
         N = len(data)
         x = np.array([data[i:i+m] for i in range(N - m + 1)])
         C = np.sum(np.max(np.abs(x[:, None] - x[None, :]), axis=2) <= r, axis=1) / (N - m + 1)
         return np.sum(np.log(C + 1e-8)) / (N - m + 1)
+    
     def approx_entropy(data, m=2, r=None):
         if r is None:
             r = 0.2 * np.std(data)
         return abs(_phi(m, r, data) - _phi(m + 1, r, data))
+    
     def sample_entropy(data, m=2, r=None):
         if r is None:
             r = 0.2 * np.std(data)
@@ -113,6 +119,7 @@ def compute_nonlinear_features(signal):
         xmj1 = np.array([data[i:i+m] for i in range(N - m)])
         A = np.sum([np.sum(np.max(np.abs(xmi1[i] - xmj1), axis=1) <= r) - 1 for i in range(len(xmi1))])
         return -np.log(A / B) if B != 0 and A != 0 else np.nan
+    
     def dfa_alpha(data):
         N = len(data)
         if N < 10:
@@ -140,12 +147,14 @@ def compute_nonlinear_features(signal):
             return np.nan
         coeffs = np.polyfit(np.log(n_vals[:len(F_n)]), np.log(F_n), 1)
         return coeffs[0]
+    
     return {
         'approximate_entropy': approx_entropy(signal),
         'sample_entropy': sample_entropy(signal),
         'detrended_fluctuation_alpha': dfa_alpha(signal)
     }
-def compute_sensor_specific_features(signal, fs):
+
+def sensor_specific_features(signal, fs):
     fft_vals = np.fft.fft(signal)
     fft_mag = np.abs(fft_vals)
     freqs = np.fft.fftfreq(len(signal), 1/fs)
@@ -165,7 +174,6 @@ def compute_sensor_specific_features(signal, fs):
         harmonic_idx = np.argmin(np.abs(freqs - harmonic_freq))
         harmonic_power += power[harmonic_idx]
     harmonic_ratio = harmonic_power / (total_power + 1e-8)
-    
     return {
         'peak_frequency': peak_frequency,
         'frequency_spread': freq_spread,
@@ -174,22 +182,23 @@ def compute_sensor_specific_features(signal, fs):
         'spectral_flux': np.sum(np.diff(fft_mag)**2),
         'spectral_decrease': np.sum((fft_mag[1:] - fft_mag[0]) / np.arange(1, len(fft_mag)))
     }
+
 def extract_combined_features(signal, fs):
     time_feats = compute_time_domain_features(signal)
     freq_feats = compute_frequency_domain_features(signal, fs)
-    advanced_feats = compute_advanced_statistical_features(signal)
-    spectrogram_feats = compute_spectrogram_features(signal, fs)
-    nonlinear_feats = compute_nonlinear_features(signal)
-    sensor_feats = compute_sensor_specific_features(signal, fs)
+    advanced_feats = advanced_statistical_features(signal)
+    spectrogram_feats = spectrogram_features(signal, fs)
+    nonlinear_feats = nonlinear_features(signal)
+    sensor_feats = sensor_specific_features(signal, fs)
+    
     all_features = {**time_feats, **freq_feats, **advanced_feats, 
                    **spectrogram_feats, **nonlinear_feats, **sensor_feats}
-    
     for key, value in all_features.items():
         if np.isnan(value) or np.isinf(value):
             all_features[key] = 0.0
     
     return all_features
-def load_amplitude_data_from_csv(csv_file_path, window_size=256):
+def load_data_from_csv(csv_file_path, window_size=256):
     df = pd.read_csv(csv_file_path, header=None)
     raw_sensor_data = []
     for i in range(0, len(df) - window_size + 1, window_size):
@@ -198,6 +207,7 @@ def load_amplitude_data_from_csv(csv_file_path, window_size=256):
         if len(values) == window_size:
             raw_sensor_data.append(values)
     return raw_sensor_data
+
 class ContinuousSensorDataset(Dataset):
     def __init__(self, data, window_size=256, fs=12000):
         self.samples = []
@@ -212,194 +222,6 @@ class ContinuousSensorDataset(Dataset):
     def __getitem__(self, idx):
         seq, feats = self.samples[idx]
         return torch.tensor(seq, dtype=torch.float32), torch.tensor(feats, dtype=torch.float32)
-class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, n_heads, dropout=0.1):
-        super().__init__()
-        assert d_model % n_heads == 0
-        self.d_k = d_model // n_heads
-        self.n_heads = n_heads
-        self.W_q = nn.Linear(d_model, d_model, bias=False)
-        self.W_k = nn.Linear(d_model, d_model, bias=False)
-        self.W_v = nn.Linear(d_model, d_model, bias=False)
-        self.W_o = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-        nn.init.xavier_uniform_(self.W_q.weight)
-        nn.init.xavier_uniform_(self.W_k.weight)
-        nn.init.xavier_uniform_(self.W_v.weight)
-    def forward(self, x):
-        B, T, D = x.size()
-        Q = self.W_q(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
-        K = self.W_k(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
-        V = self.W_v(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
-        attn = self.dropout(F.softmax(scores, dim=-1))
-        out = torch.matmul(attn, V).transpose(1, 2).contiguous().view(B, T, D)
-        return self.W_o(out)
-class TransformerBlock(nn.Module):
-    def __init__(self, d_model, n_heads, d_ff, dropout):
-        super().__init__()
-        self.attn = MultiHeadAttention(d_model, n_heads, dropout)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.ff = nn.Sequential(
-            nn.Linear(d_model, d_ff),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model),
-            nn.Dropout(dropout)
-        )
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        attn_out = self.attn(self.norm1(x))
-        x = x + self.dropout(attn_out)
-        ff_out = self.ff(self.norm2(x))
-        x = x + ff_out
-        return x
-class VariationalLayer(nn.Module):
-    def __init__(self, d_model):
-        super().__init__()
-        self.mu_proj = nn.Linear(d_model, d_model)
-        self.logvar_proj = nn.Linear(d_model, d_model)
-        
-    def forward(self, x, training=True):
-        if not training:
-            return x
-        mu = self.mu_proj(x)
-        logvar = self.logvar_proj(x)
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std, mu, logvar
-class ContinuousSensorModel(nn.Module):
-    def __init__(self, input_len=256, d_model=256, n_heads=8, n_layers=12, d_ff=512, dropout=0.1, feature_dim=40):
-        super().__init__()
-        self.input_proj = nn.Sequential(
-            nn.Linear(1, d_model // 2),
-            nn.GELU(),
-            nn.Linear(d_model // 2, d_model)
-        )
-        self.feature_proj = nn.Sequential(
-            nn.Linear(feature_dim, d_model // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 2, d_model)
-        )
-        self.pos_emb = nn.Parameter(torch.zeros(1, input_len, d_model))
-        nn.init.normal_(self.pos_emb, std=0.02)
-        self.blocks = nn.ModuleList([
-            TransformerBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)
-        ])
-        self.variational = VariationalLayer(d_model)
-        self.output_proj = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_model // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 2, 1)
-        )
-        self.input_residual = nn.Linear(1, 1)
-
-    def forward(self, x, feats, training=True):
-        B, T = x.size()
-        x_residual = self.input_residual(x.unsqueeze(-1)).squeeze(-1)
-        x = x.unsqueeze(-1)
-        x = self.input_proj(x)
-        x = x + self.pos_emb[:, :T, :]
-        f = self.feature_proj(feats)
-        feature_gate = torch.sigmoid(f.unsqueeze(1))
-        x = x * (1 + 0.1 * feature_gate.expand(-1, T, -1))
-        for block in self.blocks:
-            x = block(x)
-        if training:
-            x, mu, logvar = self.variational(x, training)
-            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / (B * T)
-        else:
-            x = self.variational(x, training)
-            kl_loss = 0
-        out = self.output_proj(x).squeeze(-1)
-        out = out + 0.1 * x_residual
-        if training:
-            return out, kl_loss
-        return out
-def variance_preserving_loss(pred, target):
-    pred_var = torch.var(pred, dim=-1)
-    target_var = torch.var(target, dim=-1)
-    return F.mse_loss(pred_var, target_var)
-def gradient_penalty_loss(pred, target):
-    pred_grad = torch.diff(pred, dim=-1)
-    target_grad = torch.diff(target, dim=-1)
-    return F.mse_loss(pred_grad, target_grad)
-def spectral_loss(pred, target):
-    pred_fft = torch.fft.fft(pred, dim=-1)
-    target_fft = torch.fft.fft(target, dim=-1)
-    return F.mse_loss(torch.abs(pred_fft), torch.abs(target_fft))
-def correlation_loss(pred, target):
-    vx = pred - pred.mean(dim=-1, keepdim=True)
-    vy = target - target.mean(dim=-1, keepdim=True)
-    corr = (vx * vy).sum(dim=-1) / (torch.sqrt((vx**2).sum(dim=-1)) * torch.sqrt((vy**2).sum(dim=-1)) + 1e-8)
-    return 1 - corr.mean()
-def train_enhanced_model(model, dataloader, feat_mean, feat_std, epochs=50, lr=1e-4):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
-    model.train()
-    for epoch in range(epochs):
-        total_loss = 0
-        total_kl = 0
-        for batch in dataloader:
-            seqs, feats = batch
-            seqs, feats = seqs.to(device), feats.to(device)
-            feats = (feats - feat_mean.to(device)) / feat_std.to(device)
-            optimizer.zero_grad()
-            output, kl_loss = model(seqs, feats, training=True)
-            mse_loss = F.mse_loss(output, seqs)
-            spec_loss = spectral_loss(output, seqs)
-            var_loss = variance_preserving_loss(output, seqs)
-            grad_loss = gradient_penalty_loss(output, seqs)
-            total_loss_batch = (
-                0.4 * mse_loss + 
-                0.3 * spec_loss + 
-                0.2 * var_loss + 
-                0.1 * grad_loss + 
-                0.01 * kl_loss
-            )
-            total_loss_batch.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
-            optimizer.step()
-            total_loss += total_loss_batch.item()
-            total_kl += kl_loss if isinstance(kl_loss, (int, float)) else kl_loss.item()
-        
-        scheduler.step()
-        
-        avg_loss = total_loss / len(dataloader)
-        avg_kl = total_kl / len(dataloader)
-        current_lr = optimizer.param_groups[0]['lr']
-        
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}, KL: {avg_kl:.6f}, LR: {current_lr:.2e}")
-def generate_dynamic_synthetic_signal(model, seeds, feat_mean, feat_std, fs=12000, target_total=4800, temperature=1.0, diversity_scale=0.1):
-    device = next(model.parameters()).device
-    model.eval()
-    all_generated = []
-    with torch.no_grad():
-        for i, seg in enumerate(seeds):
-            feats = extract_combined_features(np.array(seg), fs)
-            seg_tensor = torch.tensor(seg, dtype=torch.float32).unsqueeze(0).to(device)
-            feat_tensor = torch.tensor(list(feats.values()), dtype=torch.float32).unsqueeze(0).to(device)
-            feat_tensor = (feat_tensor - feat_mean.to(device)) / feat_std.to(device)
-            pred = model(seg_tensor, feat_tensor, training=False)
-            if temperature != 1.0:
-                pred = pred / temperature
-            if diversity_scale > 0:
-                noise = torch.randn_like(pred) * diversity_scale * torch.std(pred)
-                pred = pred + noise
-            pred_np = pred.cpu().numpy().flatten()
-            all_generated.extend(pred_np)
-            if len(all_generated) >= target_total:
-                break
-    
-    return all_generated[:target_total]
 
 def save_data_to_csv(data, filename):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -410,33 +232,237 @@ def save_data_to_csv(data, filename):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+class StatisticalMatchingHead(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.stats_predictor = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 5)
+        )
+        
+    def forward(self, x):
+        pooled = torch.mean(x, dim=1)
+        stats = self.stats_predictor(pooled)
+        return stats
+
+class MultiHead_Model(nn.Module):
+
+    def __init__(self, input_len=256, d_model=512, n_heads=8, n_layers=8, d_ff=1024, dropout=0.05, feature_dim=47):
+        super().__init__()
+        self.feature_proj = nn.Sequential(
+            nn.Linear(feature_dim, d_model // 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 4, d_model)
+        )
+        self.input_proj = nn.Sequential(
+            nn.Linear(1, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, d_model)
+        )
+        self.pos_emb = nn.Parameter(torch.randn(1, input_len, d_model) * 0.02)
+        self.blocks = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=n_heads,
+                dim_feedforward=d_ff,
+                dropout=dropout,
+                activation='gelu',
+                batch_first=True
+            ) for _ in range(n_layers)
+        ])
+        self.stats_head = StatisticalMatchingHead(d_model)
+        self.output_proj = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 1)
+        )
+        self.residual_weight = nn.Parameter(torch.tensor(0.8))
+        
+    def forward(self, x, feats, target_stats=None):
+        B, T = x.size()
+        x_emb = self.input_proj(x.unsqueeze(-1))
+        x_emb = x_emb + self.pos_emb[:, :T, :]
+        feat_emb = self.feature_proj(feats)  
+        feat_emb = feat_emb.unsqueeze(1) 
+        feat_emb = feat_emb * 0.01
+        x_emb = x_emb + feat_emb.expand(-1, T, -1)
+        for block in self.blocks:
+            x_emb = block(x_emb)
+        output = self.output_proj(x_emb).squeeze(-1)
+        residual_output = torch.sigmoid(self.residual_weight) * x + (1 - torch.sigmoid(self.residual_weight)) * output
+        pred_stats = self.stats_head(x_emb)
+        
+        return residual_output, pred_stats
+
+def statistical_loss(pred, target):
+    mse_loss = F.mse_loss(pred, target)
+    pred_mean = torch.mean(pred, dim=-1)
+    target_mean = torch.mean(target, dim=-1)
+    mean_loss = F.mse_loss(pred_mean, target_mean)
+    
+    pred_std = torch.std(pred, dim=-1)
+    target_std = torch.std(target, dim=-1)
+    std_loss = F.mse_loss(pred_std, target_std)
+    pred_range = torch.max(pred, dim=-1)[0] - torch.min(pred, dim=-1)[0]
+    target_range = torch.max(target, dim=-1)[0] - torch.min(target, dim=-1)[0]
+    range_loss = F.mse_loss(pred_range, target_range)
+    pred_q25 = torch.quantile(pred, 0.25, dim=-1)
+    pred_q75 = torch.quantile(pred, 0.75, dim=-1)
+    target_q25 = torch.quantile(target, 0.25, dim=-1)
+    target_q75 = torch.quantile(target, 0.75, dim=-1)
+    
+    percentile_loss = F.mse_loss(pred_q25, target_q25) + F.mse_loss(pred_q75, target_q75)
+    pred_centered = pred - pred_mean.unsqueeze(-1)
+    target_centered = target - target_mean.unsqueeze(-1)
+
+    pred_skew = torch.mean(pred_centered**3, dim=-1) / (pred_std**3 + 1e-8)
+    target_skew = torch.mean(target_centered**3, dim=-1) / (target_std**3 + 1e-8)
+    skew_loss = F.mse_loss(pred_skew, target_skew)
+    pred_kurt = torch.mean(pred_centered**4, dim=-1) / (pred_std**4 + 1e-8)
+    target_kurt = torch.mean(target_centered**4, dim=-1) / (target_std**4 + 1e-8)
+    kurt_loss = F.mse_loss(pred_kurt, target_kurt)
+    
+    return {
+        'mse': mse_loss,
+        'mean': mean_loss,
+        'std': std_loss,
+        'range': range_loss,
+        'percentile': percentile_loss,
+        'skew': skew_loss,
+        'kurtosis': kurt_loss
+    }
+
+def frequency_domain_loss(pred, target):
+    pred_fft = torch.fft.fft(pred, dim=-1)
+    target_fft = torch.fft.fft(target, dim=-1)
+    pred_mag = torch.abs(pred_fft)
+    target_mag = torch.abs(target_fft)
+    magnitude_loss = F.mse_loss(pred_mag, target_mag)
+    pred_phase = torch.angle(pred_fft)
+    target_phase = torch.angle(target_fft)
+    phase_loss = F.mse_loss(pred_phase, target_phase)
+    pred_psd = pred_mag ** 2
+    target_psd = target_mag ** 2
+    psd_loss = F.mse_loss(pred_psd, target_psd)
+    
+    return magnitude_loss + 0.5 * phase_loss + 0.5 * psd_loss
+
+
+def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=5e-5):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-6)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
+    
+    model.train()
+    
+    for epoch in range(epochs):
+        total_losses = {
+            'total': 0, 'mse': 0, 'mean': 0, 'std': 0, 'range': 0, 
+            'percentile': 0, 'skew': 0, 'kurtosis': 0, 'freq': 0, 'stats': 0
+        }
+        
+        for batch in dataloader:
+            seqs, feats = batch
+            seqs, feats = seqs.to(device), feats.to(device)
+            feats = (feats - feat_mean.to(device)) / feat_std.to(device)
+            target_stats = torch.stack([
+                torch.mean(seqs, dim=-1),
+                torch.std(seqs, dim=-1),
+                torch.mean((seqs - torch.mean(seqs, dim=-1, keepdim=True))**3, dim=-1) / (torch.std(seqs, dim=-1)**3 + 1e-8),
+                torch.mean((seqs - torch.mean(seqs, dim=-1, keepdim=True))**4, dim=-1) / (torch.std(seqs, dim=-1)**4 + 1e-8),
+                torch.max(seqs, dim=-1)[0] - torch.min(seqs, dim=-1)[0]
+            ], dim=-1)
+            
+            optimizer.zero_grad()
+        
+            output, pred_stats = model(seqs, feats, target_stats)
+            stat_losses = statistical_loss(output, seqs)
+            freq_loss = frequency_domain_loss(output, seqs)
+            stats_loss = F.mse_loss(pred_stats, target_stats)
+            total_loss = (
+                0.3 * stat_losses['mse'] +
+                0.2 * stat_losses['std'] +   
+                0.15 * stat_losses['mean'] +
+                0.1 * stat_losses['range'] +
+                0.1 * stat_losses['percentile'] +
+                0.05 * stat_losses['skew'] +
+                0.05 * stat_losses['kurtosis'] +
+                0.03 * freq_loss +
+                0.02 * stats_loss
+            )
+            
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+            
+            optimizer.step()
+            total_losses['total'] += total_loss.item()
+            for key, loss in stat_losses.items():
+                total_losses[key] += loss.item()
+            total_losses['freq'] += freq_loss.item()
+            total_losses['stats'] += stats_loss.item()
+        
+        scheduler.step()
+        avg_losses = {k: v / len(dataloader) for k, v in total_losses.items()}
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        print(f"Epoch {epoch+1}/{epochs}")
+        print(f"  Total: {avg_losses['total']:.6f}, MSE: {avg_losses['mse']:.6f}, STD: {avg_losses['std']:.6f}")
+        print(f"  Mean: {avg_losses['mean']:.6f}, Range: {avg_losses['range']:.6f}, Freq: {avg_losses['freq']:.6f}")
+        print(f"  LR: {current_lr:.2e}, Residual Weight: {torch.sigmoid(model.residual_weight).item():.4f}")
+
+def generate_perfect_synthetic_data(model, seeds, feat_mean, feat_std, fs=12000, target_total=4800):
+    device = next(model.parameters()).device
+    model.eval()
+    all_generated = []
+    
+    with torch.no_grad():
+        for seg in seeds:
+            feats = extract_combined_features(np.array(seg), fs)
+            seg_tensor = torch.tensor(seg, dtype=torch.float32).unsqueeze(0).to(device)
+            feat_tensor = torch.tensor(list(feats.values()), dtype=torch.float32).unsqueeze(0).to(device)
+            feat_tensor = (feat_tensor - feat_mean.to(device)) / feat_std.to(device)
+            pred, _ = model(seg_tensor, feat_tensor)
+            pred_np = pred.cpu().numpy().flatten()
+            all_generated.extend(pred_np)
+            
+            if len(all_generated) >= target_total:
+                break
+    
+    return all_generated[:target_total]
+
 if __name__ == "__main__":
     csv_path = "original_data.csv"
     window_size = 256
-    raw = load_amplitude_data_from_csv(csv_path, window_size=window_size)
+    raw = load_data_from_csv(csv_path, window_size=window_size)
     dataset = ContinuousSensorDataset(raw, window_size=window_size)
+
     sample_features = extract_combined_features(np.random.randn(window_size), 12000)
     feature_count = len(sample_features)
-    print(f"Enhanced feature count: {feature_count} features")
+    print(f"Feature count: {feature_count} features")
     all_feats = torch.stack([feat for _, feat in dataset])
     feat_mean = all_feats.mean(dim=0)
     feat_std = all_feats.std(dim=0) + 1e-6
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
-    model = ContinuousSensorModel(
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+    
+    model = MultiHead_Model(
         input_len=window_size,
-        d_model=256, 
+        d_model=512,
         n_heads=8,
-        n_layers=12,
-        d_ff=512,
-        dropout=0.1,
+        n_layers=8,
+        d_ff=1024,
+        dropout=0.05,
         feature_dim=feature_count
     )
     
-    print(f"Enhanced Model Parameters: {count_parameters(model):,}")
-    train_enhanced_model(model, dataloader, feat_mean, feat_std, epochs=50, lr=1e-4)
+    print(f"Model Parameters: {count_parameters(model):,}")
+    perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=5e-5)
     required_seeds = raw[:200]
-    flat_generated = generate_dynamic_synthetic_signal(
-        model, required_seeds, feat_mean, feat_std, 
-        target_total=4800, temperature=1.1, diversity_scale=0.05
+    synthetic_data = generate_perfect_synthetic_data(
+        model, required_seeds, feat_mean, feat_std, target_total=4800
     )
-    save_data_to_csv(flat_generated, filename="local-llm/enhanced-llm-data-v5.csv")
+    save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v6.csv")
+    
