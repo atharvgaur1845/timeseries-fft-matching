@@ -7,9 +7,7 @@ import numpy as np
 import math
 import os
 from scipy.stats import skew, kurtosis, entropy
-
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
 def compute_time_domain_features(signal):
     mean_val = np.mean(signal)
     std_dev = np.std(signal)
@@ -37,7 +35,6 @@ def compute_time_domain_features(signal):
         'waveform_index': waveform_index,
         'pulse_index': pulse_index
     }
-
 def compute_frequency_domain_features(signal, fs):
     fft_vals = np.fft.fft(signal)
     fft_mag = np.abs(fft_vals)
@@ -77,7 +74,7 @@ def extract_combined_features(signal, fs):
     freq_feats = compute_frequency_domain_features(signal, fs)
     return {**time_feats, **freq_feats}
 
-def load_amplitude_data_from_csv(csv_file_path, window_size=1024):
+def load_amplitude_data_from_csv(csv_file_path, window_size=256):
     df = pd.read_csv(csv_file_path, header=None)
     raw_sensor_data = []
     for i in range(0, len(df) - window_size + 1, window_size):
@@ -88,7 +85,7 @@ def load_amplitude_data_from_csv(csv_file_path, window_size=1024):
     return raw_sensor_data
 
 class ContinuousSensorDataset(Dataset):
-    def __init__(self, data, window_size=24, fs=12000):
+    def __init__(self, data, window_size=256, fs=12000):
         self.samples = []
         for segment in data:
             if len(segment) == window_size:
@@ -141,32 +138,37 @@ class TransformerBlock(nn.Module):
         return x
 
 class ContinuousSensorModel(nn.Module):
-    def __init__(self, input_len=128, d_model=256, n_heads=4, n_layers=8, d_ff=256, dropout=0.1, feature_dim=40):
+    def __init__(self, input_len=256, d_model=128, n_heads=4, n_layers=6, d_ff=256, dropout=0.1, feature_dim=40):
         super().__init__()
         self.input_proj = nn.Linear(1, d_model)
         self.feature_proj = nn.Linear(feature_dim, d_model)
         self.pos_emb = nn.Parameter(torch.randn(1, input_len, d_model))
+        
         self.blocks = nn.ModuleList([
             TransformerBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)
         ])
         self.output_proj = nn.Linear(d_model, 1)
 
     def forward(self, x, feats):
-        x = x.unsqueeze(-1)
-        x = self.input_proj(x) + self.pos_emb[:, :x.size(1)]
+        x = x.unsqueeze(-1)  
+        x = self.input_proj(x)
+        x = x + self.pos_emb[:, :x.size(1), :]
         f = self.feature_proj(feats).unsqueeze(1).expand(-1, x.size(1), -1)
         x = x + f
         for block in self.blocks:
             x = block(x)
         out = self.output_proj(x).squeeze(-1)
         return out
-
 def spectral_loss(pred, target):
     pred_fft = torch.fft.fft(pred, dim=-1)
     target_fft = torch.fft.fft(target, dim=-1)
     return F.mse_loss(torch.abs(pred_fft), torch.abs(target_fft))
-
-def train_continuous_model(model, dataloader, epochs=30, lr=1e-3, spectral_weight=0.5):
+def correlation_loss(pred, target):
+    vx = pred - pred.mean(dim=-1, keepdim=True)
+    vy = target - target.mean(dim=-1, keepdim=True)
+    corr = (vx * vy).sum(dim=-1) / (torch.sqrt((vx**2).sum(dim=-1)) * torch.sqrt((vy**2).sum(dim=-1)) + 1e-8)
+    return 1 - corr.mean()
+def train_continuous_model(model, dataloader, feat_mean, feat_std, epochs=30, lr=1e-3, spectral_weight=0.5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -176,6 +178,7 @@ def train_continuous_model(model, dataloader, epochs=30, lr=1e-3, spectral_weigh
         for batch in dataloader:
             seqs, feats = batch
             seqs, feats = seqs.to(device), feats.to(device)
+            feats = (feats - feat_mean.to(device)) / feat_std.to(device)
             optimizer.zero_grad()
             output = model(seqs, feats)
             loss1 = F.mse_loss(output, seqs)
@@ -185,8 +188,6 @@ def train_continuous_model(model, dataloader, epochs=30, lr=1e-3, spectral_weigh
             optimizer.step()
             total_loss += loss.item()
         print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss / len(dataloader):.6f}")
-    torch.save(model.state_dict(), "local-llm/best_model.pth")
-
 def generate_bulk_synthetic_signal(model, seeds, fs=12000, target_total=4800):
     device = next(model.parameters()).device
     model.eval()
@@ -204,30 +205,31 @@ def save_data_to_csv(data, filename):
     with open(filename, "w") as f:
         for v in data:
             f.write(f"{v}\n")
-
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
 if __name__ == "__main__":
     csv_path = "original_data.csv"
-    raw = load_amplitude_data_from_csv(csv_path, window_size=24)
-    first_feat = extract_combined_features(np.array(raw[0]), fs=12000)
-    feature_dim = len(first_feat)
-
-    dataset = ContinuousSensorDataset(raw)
+    window_size = 256
+    raw = load_amplitude_data_from_csv(csv_path, window_size=window_size)
+    dataset = ContinuousSensorDataset(raw, window_size=window_size)
+    if len(dataset) == 0:
+        print("Error: Dataset is empty! Check your CSV file.")
+        exit(1)
+    all_feats = torch.stack([feat for _, feat in dataset])
+    feat_mean = all_feats.mean(dim=0)
+    feat_std = all_feats.std(dim=0) + 1e-6
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
     model = ContinuousSensorModel(
-        input_len=24,
+        input_len=window_size,
         d_model=128,
         n_heads=4,
         n_layers=8,
         d_ff=256,
         dropout=0.1,
-        feature_dim=feature_dim
+        feature_dim=len(dataset[0][1])
     )
-
     print(f"Model Parameters: {count_parameters(model):,}")
-    train_continuous_model(model, dataloader, epochs=30, lr=1e-3)
+    train_continuous_model(model, dataloader, feat_mean, feat_std, epochs=30, lr=1e-3)
     required_seeds = raw[:200]
     flat_generated = generate_bulk_synthetic_signal(model, required_seeds, target_total=4800)
-    save_data_to_csv(flat_generated, filename="local-llm/local-llm-data-v4.csv")
+    save_data_to_csv(flat_generated, filename="local-llm/local-llm-data-v5.csv")
