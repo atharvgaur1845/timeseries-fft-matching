@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import skew, kurtosis, entropy, wasserstein_distance
 
 real = pd.read_csv("original_data.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/local-llm-data-v3.csv", header=None)[0].values.astype(float)
+synthetic = pd.read_csv("local-llm/local-llm-data-v4.csv", header=None)[0].values.astype(float)
 
 
 plt.figure(figsize=(16, 9))
