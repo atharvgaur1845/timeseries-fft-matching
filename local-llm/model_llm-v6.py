@@ -410,9 +410,8 @@ def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=
         current_lr = optimizer.param_groups[0]['lr']
         
         print(f"Epoch {epoch+1}/{epochs}")
-        print(f"  Total: {avg_losses['total']:.6f}, MSE: {avg_losses['mse']:.6f}, STD: {avg_losses['std']:.6f}")
-        print(f"  Mean: {avg_losses['mean']:.6f}, Range: {avg_losses['range']:.6f}, Freq: {avg_losses['freq']:.6f}")
-        print(f"  LR: {current_lr:.2e}, Residual Weight: {torch.sigmoid(model.residual_weight).item():.4f}")
+        print(f"Total: {avg_losses['total']:.6f}, MSE: {avg_losses['mse']:.6f}, STD: {avg_losses['std']:.6f}")
+        print(f"LR: {current_lr:.2e},Residual Weight: {torch.sigmoid(model.residual_weight).item():.4f}")
 
 def generate_perfect_synthetic_data(model, seeds, feat_mean, feat_std, fs=12000, target_total=4800):
     device = next(model.parameters()).device
@@ -460,9 +459,9 @@ if __name__ == "__main__":
     
     print(f"Model Parameters: {count_parameters(model):,}")
     perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=5e-5)
-    required_seeds = raw[:200]
+    required_seeds = raw[:2000]
     synthetic_data = generate_perfect_synthetic_data(
-        model, required_seeds, feat_mean, feat_std, target_total=4800
+        model, required_seeds, feat_mean, feat_std, target_total=48000
     )
     save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v6.csv")
     

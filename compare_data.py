@@ -8,8 +8,8 @@ synthetic = pd.read_csv("local-llm/local-llm-data-v6.csv", header=None)[0].value
 
 
 plt.figure(figsize=(16, 9))
-plt.plot(real[:900], label='Real', alpha=0.7)
-plt.plot(synthetic[:900], label='Synthetic Local LLM', alpha=0.7)
+plt.plot(real[:200], label='Real', alpha=0.7)
+plt.plot(synthetic[:200], label='Synthetic Local LLM', alpha=0.7)
 plt.title("Time-Domain Comparison")
 plt.xlabel("Sample Index")
 plt.ylabel("Amplitude")
