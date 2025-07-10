@@ -391,7 +391,7 @@ def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=
                 0.1 * stat_losses['percentile'] +
                 0.05 * stat_losses['skew'] +
                 0.05 * stat_losses['kurtosis'] +
-                0.20 * freq_loss +
+                0.60 * freq_loss +
                 0.02 * stats_loss
             )
             
