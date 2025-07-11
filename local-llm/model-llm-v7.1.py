@@ -8,11 +8,7 @@ import math
 import os
 from scipy.stats import skew, kurtosis, entropy
 from scipy import signal as scipy_signal
-import torch.backends.cudnn as cudnn
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-cudnn.enabled = True
-cudnn.benchmark = False  
-cudnn.deterministic = True
 def compute_time_domain_features(signal):
     mean_val = np.mean(signal)
     std_dev = np.std(signal)
@@ -40,6 +36,7 @@ def compute_time_domain_features(signal):
         'waveform_index': waveform_index,
         'pulse_index': pulse_index
     }
+
 def compute_frequency_domain_features(signal, fs):
     fft_vals = np.fft.fft(signal)
     fft_mag = np.abs(fft_vals)
@@ -95,6 +92,7 @@ def spectrogram_features(signal, fs):
         'spectral_bandwidth_time_avg': np.mean(spectral_bandwidth),
         'spectral_contrast': np.mean(np.max(Sxx, axis=0) / (np.mean(Sxx, axis=0) + 1e-8))
     }
+
 def nonlinear_features(signal):
     def _phi(m, r, data):
         N = len(data)
@@ -258,6 +256,7 @@ class CNNEncoderBlock(nn.Module):
         return x + residual
 
 class MultiScaleCNNExtractor(nn.Module):
+    """Extract features at multiple temporal scales"""
     def __init__(self, input_channels, output_channels):
         super().__init__()
         self.conv_1 = CNNEncoderBlock(input_channels, output_channels//4, kernel_size=3, dilation=1)
@@ -274,7 +273,6 @@ class MultiScaleCNNExtractor(nn.Module):
         feat_4 = self.conv_4(x)
         feat_8 = self.conv_8(x)
         combined = torch.cat([feat_1, feat_2, feat_4, feat_8], dim=1)
-        
         fused = self.fusion(combined)
         fused = self.fusion_bn(fused)
         fused = self.fusion_act(fused)
@@ -293,78 +291,74 @@ class StatisticalMatchingHead(nn.Module):
         pooled = torch.mean(x, dim=1)
         stats = self.stats_predictor(pooled)
         return stats
-class MultiHead_Model_CNN(nn.Module):
-    def __init__(self, input_len=256, d_model=512, n_heads=8, n_layers=8, d_ff=1024, dropout=0.05, feature_dim=47):
+class HybridCNNTransformerModel(nn.Module):
+    def __init__(self, input_len=256, d_model=512, n_heads=8, n_layers=6, d_ff=1024, dropout=0.05, feature_dim=47):
         super().__init__()
-        self.input_cnn = nn.Sequential(
-            MultiScaleCNNExtractor(1, 64),
-            CNNEncoderBlock(64, 128, kernel_size=5),
+        self.cnn_path = nn.Sequential(
+            MultiScaleCNNExtractor(1, 128),
             CNNEncoderBlock(128, 256, kernel_size=3),
-            CNNEncoderBlock(256, d_model, kernel_size=3)
+            CNNEncoderBlock(256, d_model//2, kernel_size=3)
         )
-        self.feature_proj = nn.Sequential(
-            nn.Linear(feature_dim, d_model // 4),
+        self.input_proj = nn.Sequential(
+            nn.Linear(1, d_model // 2),
             nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 4, d_model)
+            nn.Linear(d_model // 2, d_model//2)
         )
-        self.pos_emb = nn.Parameter(torch.randn(1, input_len, d_model) * 0.02)
-        self.blocks = nn.ModuleList([
+        
+        self.pos_emb = nn.Parameter(torch.randn(1, input_len, d_model//2) * 0.02)
+        
+        self.transformer_blocks = nn.ModuleList([
             nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=n_heads,
-                dim_feedforward=d_ff,
+                d_model=d_model//2,
+                nhead=n_heads//2,
+                dim_feedforward=d_ff//2,
                 dropout=dropout,
                 activation='gelu',
                 batch_first=True
             ) for _ in range(n_layers)
         ])
+        self.feature_proj = nn.Sequential(
+            nn.Linear(feature_dim, d_model // 4),
+            nn.GELU(),
+            nn.Linear(d_model // 4, d_model)
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model)
+        )
         self.stats_head = StatisticalMatchingHead(d_model)
-        self.output_transformer = nn.Sequential(
+        self.output_proj = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, d_model // 2),
             nn.GELU(),
-            nn.Linear(d_model // 2, d_model)
+            nn.Linear(d_model // 2, 1)
         )
-        self.output_cnn = nn.Sequential(
-            nn.Conv1d(d_model, 256, kernel_size=3, padding=1),
-            nn.BatchNorm1d(256),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            
-            nn.Conv1d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm1d(128),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            
-            nn.Conv1d(128, 64, kernel_size=3, padding=1),
-            nn.BatchNorm1d(64),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            
-            nn.Conv1d(64, 1, kernel_size=3, padding=1)
-        )
+        
         self.residual_weight = nn.Parameter(torch.tensor(0.8))
         
     def forward(self, x, feats, target_stats=None):
         B, T = x.size()
-        x_input = x.unsqueeze(1) 
-        x_cnn = self.input_cnn(x_input) 
-        x_emb = x_cnn.transpose(1, 2)
-        x_emb = x_emb + self.pos_emb[:, :T, :]
-
-        feat_emb = self.feature_proj(feats) 
-        feat_emb = feat_emb.unsqueeze(1) * 0.01
-        x_emb = x_emb + feat_emb.expand(-1, T, -1)
+        x_cnn_input = x.unsqueeze(1) 
+        cnn_features = self.cnn_path(x_cnn_input)
+        cnn_features = cnn_features.transpose(1, 2)
+        x_trans = self.input_proj(x.unsqueeze(-1))
+        x_trans = x_trans + self.pos_emb[:, :T, :]
         
-        for block in self.blocks:
-            x_emb = block(x_emb)
-        transformer_out = self.output_transformer(x_emb) 
-        cnn_input = transformer_out.transpose(1, 2) 
-        cnn_output = self.output_cnn(cnn_input)  
-        output = cnn_output.squeeze(1)
+        for block in self.transformer_blocks:
+            x_trans = block(x_trans)
+        
+        combined = torch.cat([cnn_features, x_trans], dim=-1)
+        
+        feat_emb = self.feature_proj(feats)
+        feat_emb = feat_emb.unsqueeze(1) * 0.01
+        combined = combined + feat_emb.expand(-1, T, -1)
+        fused = self.fusion(combined)
+        output = self.output_proj(fused).squeeze(-1)
         residual_output = torch.sigmoid(self.residual_weight) * x + (1 - torch.sigmoid(self.residual_weight)) * output
-        pred_stats = self.stats_head(x_emb)
+        
+        pred_stats = self.stats_head(fused)
         
         return residual_output, pred_stats
 def statistical_loss(pred, target):
@@ -372,7 +366,6 @@ def statistical_loss(pred, target):
     pred_mean = torch.mean(pred, dim=-1)
     target_mean = torch.mean(target, dim=-1)
     mean_loss = F.mse_loss(pred_mean, target_mean)
-    
     pred_std = torch.std(pred, dim=-1)
     target_std = torch.std(target, dim=-1)
     std_loss = F.mse_loss(pred_std, target_std)
@@ -383,11 +376,9 @@ def statistical_loss(pred, target):
     pred_q75 = torch.quantile(pred, 0.75, dim=-1)
     target_q25 = torch.quantile(target, 0.25, dim=-1)
     target_q75 = torch.quantile(target, 0.75, dim=-1)
-    
     percentile_loss = F.mse_loss(pred_q25, target_q25) + F.mse_loss(pred_q75, target_q75)
     pred_centered = pred - pred_mean.unsqueeze(-1)
     target_centered = target - target_mean.unsqueeze(-1)
-
     pred_skew = torch.mean(pred_centered**3, dim=-1) / (pred_std**3 + 1e-8)
     target_skew = torch.mean(target_centered**3, dim=-1) / (target_std**3 + 1e-8)
     skew_loss = F.mse_loss(pred_skew, target_skew)
@@ -462,7 +453,7 @@ def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=
                 0.03 * freq_loss +
                 0.02 * stats_loss
             )
-            #we will ajust as required
+            
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
             
@@ -512,20 +503,20 @@ if __name__ == "__main__":
     feat_mean = all_feats.mean(dim=0)
     feat_std = all_feats.std(dim=0) + 1e-6
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
-    
-    model = MultiHead_Model_CNN(
+    model = HybridCNNTransformerModel(
         input_len=window_size,
         d_model=512,
         n_heads=8,
-        n_layers=8,
+        n_layers=6,
         d_ff=1024,
         dropout=0.05,
         feature_dim=feature_count
     )
+    
     print(f"Model Parameters: {count_parameters(model):,}")
     perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=5e-5)
     required_seeds = raw[:2000]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
     )
-    save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v7.csv")
+    save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v7.1.csv")
