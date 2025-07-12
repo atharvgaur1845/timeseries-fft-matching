@@ -4,12 +4,12 @@ import matplotlib.pyplot as plt
 from scipy.stats import skew, kurtosis, entropy, wasserstein_distance
 
 real = pd.read_csv("original_data.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/local-llm-data-v6.1(f).csv", header=None)[0].values.astype(float)
+synthetic = pd.read_csv("local-llm/local-llm-data-v7.csv", header=None)[0].values.astype(float)
 
 
 plt.figure(figsize=(16, 9))
-plt.plot(real[:600], label='Real', alpha=0.7)
-plt.plot(synthetic[:600], label='Synthetic Local LLM', alpha=0.5)
+plt.plot(real[:2400], label='Real', alpha=0.7)
+plt.plot(synthetic[:2400], label='Synthetic Local LLM', alpha=0.5)
 plt.title("Time-Domain Comparison")
 plt.xlabel("Sample Index")
 plt.ylabel("Amplitude")
