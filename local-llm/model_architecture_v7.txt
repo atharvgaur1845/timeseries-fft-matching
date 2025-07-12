@@ -1,0 +1,131 @@
+START
+  |
+  v
++----------------------+
+| original_data.csv    |
++----------------------+
+  |
+  v
++----------------------+
+| Load Data            |
+| (load_data_from_csv) |
++----------------------+
+  |
+  v
++------------------------------+
+| ContinuousSensorDataset      |
+| (Segment → Feature Extract)  |
++------------------------------+
+  |
+  |--- For each segment:
+  |       |
+  |       v
+  |   +------------------------------------------+
+  |   | extract_combined_features(signal, fs):   |
+  |   +------------------------------------------+
+  |     |             |             |             |
+  |     v             v             v             v
+  |  Time Domain   Frequency   Advanced Stat.   Spectrogram
+  |   Features      Features     Features        Features
+  |     |             |             |             |
+  |     v             v             v             v
+  |  Skew, RMS,     FFT,        Median, IQR     Centroid,
+  |  Mean, etc.     PSD, etc.   ZeroCrossing    Bandwidth
+  |                                             Contrast
+  |
+  |     +-------------------------------+
+  |     | Nonlinear Features            |
+  |     | (ApEn, SampEn, DFA)           |
+  |     +-------------------------------+
+  |
+  |     +-------------------------------+
+  |     | Sensor-Specific Features      |
+  |     | (Peak freq, Harmonics, etc.)  |
+  |     +-------------------------------+
+  |
+  v
++--------------------------------------------+
+| DataLoader                                 |
+| (Combines sequence + features into batches)|
++--------------------------------------------+
+  |
+  v
++---------------------------------------------+
+| MultiHead_Model_CNN                         |
++---------------------------------------------+
+|                                             |
+| +----------------+     +------------------+ |
+| | Input CNN      | --> | Transformer      | |
+| | (Multi-scale)  |     | Encoder (8-layer)| |
+| +----------------+     +------------------+ |
+|       |                            |        |
+|       +------------>+-------------+         |
+|                    | Pos Embedding + Feat.  |
+|                    | Projection             |
+|                    v                        |
+|               +-------------------+         |
+|               | Output Transformer|         |
+|               | (Dense Head)      |         |
+|               +-------------------+         |
+|                    |                        |
+|                    v                        |
+|             +----------------------+        |
+|             | Output CNN Decoder   |        |
+|             +----------------------+        |
+|                    |                        |
+|                    v                        |
+|      +-----------------------------+        |
+|      | Residual Connection (learned)|       |
+|      +-----------------------------+        |
+|                    |                        |
+|                    v                        |
+|        +-----------------------------+      |
+|        | Statistical Matching Head   |      |
+|        | (Predicts 5 summary stats)  |      |
+|        +-----------------------------+      |
++---------------------------------------------+
+  |
+  v
++------------------------------+
+| Training Loop (per epoch)    |
++------------------------------+
+  |
+  v
++------------------------------+
+| Compute Target Stats         |
+| (mean, std, skew, etc.)      |
++------------------------------+
+  |
+  |---------------------------+
+  |                           |
+  v                           v
++------------------+      +-----------------------+
+| Statistical Loss |      | Frequency Domain Loss |
+| (MSE, Skew, etc) |      | (FFT mag, phase, PSD) |
++------------------+      +-----------------------+
+  |                           |
+  +------------+--------------+
+               |
+               v
+    +--------------------------+
+    | Total Weighted Loss      |
+    +--------------------------+
+               |
+               v
+        Backprop + Optimizer
+               |
+               v
+           Model Trained
+               |
+               v
++----------------------------------+
+| generate_perfect_synthetic_data |
++----------------------------------+
+  |
+  v
++-------------------------+
+| Save to new CSV output  |
+| "local-llm-data-v7.csv" |
++-------------------------+
+
+END

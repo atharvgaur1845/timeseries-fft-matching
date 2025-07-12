@@ -1,0 +1,175 @@
+START
+  |
+  v
++----------------------------------+
+| CSV Input: original_data.csv     |
++----------------------------------+
+  |
+  v
++------------------------------------------+
+| load_data_from_csv()                     |
+| - Reads raw signal in windowed segments  |
+| - Each segment of size = 256             |
++------------------------------------------+
+  |
+  v
++-----------------------------------------------------+
+| ContinuousSensorDataset                             |
+| - For each 256-sample segment:                      |
+|     1. extract_combined_features(signal, fs=12000)  |
+|     2. Return (raw_segment, feature_vector)         |
++-----------------------------------------------------+
+  |
+  v
++--------------------------------------+
+| extract_combined_features(signal, fs)|
++--------------------------------------+
+  |
+  |--- Aggregates outputs of multiple feature extractors:
+  |       |
+  |       +------------------------------+
+  |       | Time Domain Features         |
+  |       | (mean, std, RMS, skew, etc.) |
+  |       +------------------------------+
+  |
+  |       +------------------------------+
+  |       | Frequency Domain Features    |
+  |       | (FFT, centroid, rolloff, etc)|
+  |       +------------------------------+
+  |
+  |       +------------------------------+
+  |       | Advanced Statistical Features|
+  |       | (median, IQR, ZCR, etc.)     |
+  |       +------------------------------+
+  |
+  |       +------------------------------+
+  |       | Spectrogram Features         |
+  |       | (centroid, contrast, BW)     |
+  |       +------------------------------+
+  |
+  |       +------------------------------+
+  |       | Nonlinear Features           |
+  |       | (ApEn, SampEn, DFA alpha)    |
+  |       +------------------------------+
+  |
+  |       +------------------------------+
+  |       | Sensor-Specific Features     |
+  |       | (peak freq, rolloff, flux)   |
+  |       +------------------------------+
+  |
+  v
++------------------------------+
+| torch.utils.data.Dataset     |
+| - Returns (raw_seq, features)|
++------------------------------+
+  |
+  v
++-------------------------------------+
+| DataLoader(batch_size=4, shuffle=1)|
++-------------------------------------+
+  |
+  v
++---------------------------------------------+
+| HybridCNNTransformerModel                   |
++---------------------------------------------+
+|                                             |
+| +----------------------------------------+  |
+| | CNN Pathway (Multi-Scale Extractor)    |  |
+| | - Dilated CNNs (d=1,2,4,8)             |  |
+| | - CNNEncoderBlock × 2                  |  |
+| +----------------------------------------+  |
+|               |                             |
+|               v                             |
+|     CNN Output: [B, T, D/2]                 |
+|                                             |
+| +----------------------------------------+  |
+| | Transformer Pathway                    |  |
+| | - Input Linear(1 → D/2)                |  |
+| | - Positional Embeddings                |  |
+| | - TransformerEncoderLayer × 6         |  |
+| +----------------------------------------+  |
+|               |                             |
+|               v                             |
+|   Transformer Output: [B, T, D/2]           |
+|                                             |
+| +-----------------------------+             |
+| | Concatenate [CNN | Transf.] |             |
+| +-----------------------------+             |
+|               |                             |
+|               v                             |
+| +---------------------------------------+   |
+| | Feature Projection (from 47-dim vector)|  |
+| | - Linear → GELU → Linear (→ D)        |   |
+| +---------------------------------------+   |
+|               |                             |
+|               v                             |
+| +-----------------------------+             |
+| | Element-wise Add to all T steps |         |
+| +-----------------------------+             |
+|               |                             |
+|               v                             |
+| +-----------------------------+             |
+| | Fusion MLP + Dropout        |             |
+| +-----------------------------+             |
+|               |                             |
+|               v                             |
+| +-----------------------------+             |
+| | Output Head (Linear Layers) |             |
+| | → Reconstruct 256-sample seq|             |
+| +-----------------------------+             |
+|               |                             |
+|               v                             |
+| +-------------------------------------+     |
+| | Residual Blend (learned α)          |     |
+| | y_final = α·x_input + (1-α)·y_pred  |     |
+| +-------------------------------------+     |
+|               |                             |
+|               v                             |
+| +-------------------------------+           |
+| | Statistical Matching Head     |           |
+| | - Predicts [mean, std, skew, |           |
+| |   kurtosis, range]           |           |
+| +-------------------------------+           |
++---------------------------------------------+
+  |
+  v
++------------------------+
+| perfect_fit_training() |
++------------------------+
+  |
+  |--- For each epoch:
+  |       |
+  |       +-------------------------------+
+  |       | Forward Pass                  |
+  |       +-------------------------------+
+  |       | Compare predicted sequence    |
+  |       | with true sequence using:     |
+  |       |  • statistical_loss           |
+  |       |  • frequency_domain_loss      |
+  |       |  • predicted feature vector   |
+  |       |    vs actual target_stats     |
+  |       +-------------------------------+
+  |       | Compute weighted total loss   |
+  |       | Backpropagation + Clip Grad   |
+  |       | Update weights                |
+  |       +-------------------------------+
+  |
+  v
++------------------------------+
+| Trained Model (Perfect Fit)  |
++------------------------------+
+  |
+  v
++------------------------------------------+
+| generate_perfect_synthetic_data()        |
+| - Input: Trained model, seeds, features  |
+| - Output: Synthetic signals using model  |
++------------------------------------------+
+  |
+  v
++-----------------------------+
+| Save synthetic data to CSV |
+| "local-llm-data-v7.1.csv"  |
++-----------------------------+
+
+END

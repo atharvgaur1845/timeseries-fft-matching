@@ -1,0 +1,85 @@
+ ┌───────────────────────────────┐
+ │ 1. CSV Time-Series Input      │
+ │ ───────────────────────────── │
+ │ File: original_data.csv       │
+ │ Format: 1D sensor signal      │
+ └──────────────┬────────────────┘
+                │
+                ▼
+ ┌───────────────────────────────┐
+ │ 2. Windowing                 │
+ │ ───────────────────────────── │
+ │ Fixed-length: 256 samples     │
+ │ Overlap: None                 │
+ └──────────────┬────────────────┘
+                │
+                ▼
+ ┌────────────────────────────────────────────┐
+ │ 3. Feature Extraction Pipeline              │
+ │ ─────────────────────────────────────────── │
+ │ - Time-domain features                   │
+ │ - Frequency-domain features              │
+ │ - Advanced statistics (MAD, IQR, etc.)   │
+ │ - Spectrogram-based (Centroid, BW)      │
+ │ - Nonlinear dynamics (Entropy, DFA)      │
+ │ - Sensor-specific (Harmonics, Roll-off) │
+ └──────────────┬──────────────────────────────┘
+                │
+                ▼
+ ┌─────────────────────────────────────┐
+ │ 4. Dataset Preparation (PyTorch)    │
+ │ ─────────────────────────────────── │
+ │ Dataset: Tuple of (Signal, Features)│
+ │ Normalized features using mean/std  │
+ └──────────────┬──────────────────────┘
+                │
+                ▼
+ ┌────────────────────────────────────────────────────┐
+ │ 5. MultiHead_Model (Transformer + Matching Head)   │
+ │ ─────────────────────────────────────────────────── │
+ │ - Signal Input ➜ Linear(1→d_model) + Pos Embedding  │
+ │ - Feature Input ➜ Linear + Projection               │
+ │ - Feature injection: added to signal embedding      │
+ │ - 8-layer Transformer Encoder (8 heads, GELU)       │
+ │ - Residual Path: Learnable weighted skip connection │
+ │ - Output Projection: Predict Reconstructed Signal   │
+ │ - Stats Head: Predict [mean, std, skew, kurt, range]│
+ └──────────────┬──────────────────────────────────────┘
+                │
+                ▼
+ ┌────────────────────────────────────────────────────┐
+ │ 6. Loss Functions                                  │
+ │ ─────────────────────────────────────────────────── │
+ │ ✔️ Statistical Loss: MSE + Mean + Std + Range ...   │
+ │ ✔️ Frequency Loss: FFT Magnitude + PSD + Phase     │
+ │ ✔️ Matching Head Loss: Predict statistical summary │
+ └──────────────┬──────────────────────────────────────┘
+                │
+                ▼
+ ┌───────────────────────────────┐
+ │ 7. Training Loop              │
+ │ ───────────────────────────── │
+ │ - Optimizer: AdamW            │
+ │ - Scheduler: StepLR(50, 0.5)  │
+ │ - Clip Gradients              │
+ │ - Epochs: 200                 │
+ └──────────────┬────────────────┘
+                │
+                ▼
+ ┌──────────────────────────────────────────────┐
+ │ 8. Synthetic Data Generation (Post-Training) │
+ │ ───────────────────────────────────────────── │
+ │ - Seed input segment from real data          │
+ │ - Extract features                           │
+ │ - Forward pass through trained model         │
+ │ - Generate predicted reconstruction          │
+ │ - Repeat until total target length met       │
+ └──────────────┬───────────────────────────────┘
+                │
+                ▼
+ ┌───────────────────────────────┐
+ │ 9. Save Final Data            │
+ │ ───────────────────────────── │
+ │ Output File: local-llm-data-v6.csv │
+ │ Format: Flattened 1D signal         │
+ └───────────────────────────────┘
