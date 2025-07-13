@@ -7,7 +7,7 @@ from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
 real = pd.read_csv("original_data.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/local-llm-data-v6(Ep10).csv", header=None)[0].values.astype(float)
+synthetic = pd.read_csv("local-llm/local-llm-data-v6(Ep5).csv", header=None)[0].values.astype(float)
 
 
 plt.figure(figsize=(16, 9))
@@ -190,7 +190,7 @@ def compute_all_metrics(signal_dict, fs=100):
             print(f"KL Divergence (hist)    : {kl_divergence(arr1, arr2):.4f}")
             print(f"Maximum Mean Discrepancy: {mmd(arr1, arr2):.6f}")
 real = pd.read_csv("original_data.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/local-llm-data-v6(Ep10).csv", header=None)[0].values.astype(float)
+synthetic = pd.read_csv("local-llm/local-llm-data-v6(Ep5).csv", header=None)[0].values.astype(float)
 signals={
     'real': real,
     'synthetic': synthetic

@@ -8,6 +8,7 @@ import math
 import os
 from scipy.stats import skew, kurtosis, entropy
 from scipy import signal as scipy_signal
+import matplotlib.pyplot as plt
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 def compute_time_domain_features(signal):
     mean_val = np.mean(signal)
@@ -349,8 +350,6 @@ def frequency_domain_loss(pred, target):
     psd_loss = F.mse_loss(pred_psd, target_psd)
     
     return magnitude_loss + 0.5 * phase_loss + 0.5 * psd_loss
-
-
 def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=5e-5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -358,6 +357,10 @@ def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
     
     model.train()
+    loss_history = {
+        'total': [], 'mse': [], 'mean': [], 'std': [], 'range': [], 
+        'percentile': [], 'skew': [], 'kurtosis': [], 'freq': [], 'stats': []
+    }
     
     for epoch in range(epochs):
         total_losses = {
@@ -407,11 +410,17 @@ def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=
         
         scheduler.step()
         avg_losses = {k: v / len(dataloader) for k, v in total_losses.items()}
+        for key, value in avg_losses.items():
+            loss_history[key].append(value)
+        
         current_lr = optimizer.param_groups[0]['lr']
         
         print(f"Epoch {epoch+1}/{epochs}")
         print(f"Total: {avg_losses['total']:.6f}, MSE: {avg_losses['mse']:.6f}, STD: {avg_losses['std']:.6f}")
-        print(f"LR: {current_lr:.2e},Residual Weight: {torch.sigmoid(model.residual_weight).item():.4f}")
+        print(f"LR: {current_lr:.2e}, Residual Weight: {torch.sigmoid(model.residual_weight).item():.4f}")
+    
+    return loss_history
+
 
 def generate_perfect_synthetic_data(model, seeds, feat_mean, feat_std, fs=12000, target_total=4800):
     device = next(model.parameters()).device
@@ -432,7 +441,26 @@ def generate_perfect_synthetic_data(model, seeds, feat_mean, feat_std, fs=12000,
                 break
     
     return all_generated[:target_total]
-
+def plot_total_loss_only(loss_history, save_path=None):
+    plt.figure(figsize=(10, 6))
+    epochs = range(1, len(loss_history['total']) + 1)
+    plt.plot(epochs, loss_history['total'], 'b-', linewidth=2, marker='o', markersize=4)
+    plt.title('Training Loss Curve', fontsize=16, fontweight='bold')
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Total Loss', fontsize=12)
+    plt.grid(True, alpha=0.3)
+    min_loss = min(loss_history['total'])
+    min_epoch = loss_history['total'].index(min_loss) + 1
+    plt.annotate(f'Min Loss: {min_loss:.6f}\nEpoch: {min_epoch}', 
+                xy=(min_epoch, min_loss), xytext=(min_epoch + len(epochs)*0.1, min_loss + max(loss_history['total'])*0.1),
+                arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
+                fontsize=10, bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7))
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Total loss plot saved to: {save_path}")
+    
+    plt.show()
 if __name__ == "__main__":
     csv_path = "original_data.csv"
     window_size = 256
@@ -458,10 +486,13 @@ if __name__ == "__main__":
     )
     
     print(f"Model Parameters: {count_parameters(model):,}")
-    perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=10, lr=5e-5)
+    loss_history = perfect_fit_training(
+        model, dataloader, feat_mean, feat_std, epochs=5, lr=5e-5
+    )
+    plot_total_loss_only(loss_history, save_path=None)
     required_seeds = raw[:2000]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
     )
-    save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v6(Ep10).csv")
+    save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v6(Ep5).csv")
     
