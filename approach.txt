@@ -15,3 +15,4 @@ Now I have followed two aproach to make synthetic data
     Make sure the output maintains a natural, realistic variation — not exact repetition or clean sine wave — just like the original.""
 
 2. Training small transformer based LLM for data generation
+, transformermodel for classification,

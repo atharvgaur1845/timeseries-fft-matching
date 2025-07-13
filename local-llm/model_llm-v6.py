@@ -453,15 +453,15 @@ if __name__ == "__main__":
         n_heads=8,
         n_layers=8,
         d_ff=1024,
-        dropout=0.05,
+        dropout=0.3,
         feature_dim=feature_count
     )
     
     print(f"Model Parameters: {count_parameters(model):,}")
-    perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=5e-5)
+    perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=10, lr=5e-5)
     required_seeds = raw[:2000]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
     )
-    save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v6.csv")
+    save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v6(Ep10).csv")
     
