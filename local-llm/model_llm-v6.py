@@ -442,23 +442,72 @@ def generate_perfect_synthetic_data(model, seeds, feat_mean, feat_std, fs=12000,
     
     return all_generated[:target_total]
 def plot_total_loss_only(loss_history, save_path=None):
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(14, 8))
     epochs = range(1, len(loss_history['total']) + 1)
-    plt.plot(epochs, loss_history['total'], 'b-', linewidth=2, marker='o', markersize=4)
-    plt.title('Training Loss Curve', fontsize=16, fontweight='bold')
-    plt.xlabel('Epoch', fontsize=12)
-    plt.ylabel('Total Loss', fontsize=12)
-    plt.grid(True, alpha=0.3)
-    min_loss = min(loss_history['total'])
-    min_epoch = loss_history['total'].index(min_loss) + 1
-    plt.annotate(f'Min Loss: {min_loss:.6f}\nEpoch: {min_epoch}', 
-                xy=(min_epoch, min_loss), xytext=(min_epoch + len(epochs)*0.1, min_loss + max(loss_history['total'])*0.1),
-                arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
-                fontsize=10, bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7))
+    total_loss = loss_history['total']
+    plt.plot(epochs, total_loss, 'b-', linewidth=3, marker='o', markersize=6, 
+             markerfacecolor='white', markeredgecolor='blue', markeredgewidth=2, 
+             label='Total Loss', alpha=0.9)
+    plt.title('Training Loss Analysis', 
+              fontsize=20, fontweight='bold', pad=20)
+    plt.xlabel('Epoch', fontsize=16, fontweight='bold')
+    plt.ylabel('Total Loss', fontsize=16, fontweight='bold')
+    plt.grid(True, alpha=0.6, linestyle='--', linewidth=1)
+    min_loss = min(total_loss)
+    max_loss = max(total_loss)
+    min_epoch = total_loss.index(min_loss) + 1
+    max_epoch = total_loss.index(max_loss) + 1
+    final_loss = total_loss[-1]
+    plt.scatter(min_epoch, min_loss, color='red', s=150, zorder=5, 
+                marker='*', label='Minimum Loss', edgecolor='darkred', linewidth=2)
+    plt.scatter(max_epoch, max_loss, color='orange', s=120, zorder=5, 
+                marker='^', label='Maximum Loss', edgecolor='darkorange', linewidth=2)
+    plt.axhline(y=min_loss, color='red', linestyle='--', linewidth=2, alpha=0.7)
+    plt.axvline(x=min_epoch, color='red', linestyle='--', linewidth=2, alpha=0.7)
+    plt.annotate(
+        f'Minimum Loss: {min_loss:.6f}\nEpoch: {min_epoch}\nImprovement: {max_loss - min_loss:.6f}', 
+        xy=(min_epoch, min_loss), 
+        xytext=(min_epoch + len(epochs)*0.05, min_loss + (max_loss - min_loss)*0.15),
+        arrowprops=dict(arrowstyle='->', color='red', lw=2.5, alpha=0.8),
+        fontsize=12, fontweight='bold',
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="yellow", alpha=0.9, 
+                  edgecolor='red', linewidth=2)
+    )
+    plt.annotate(
+        f'Final Loss: {final_loss:.6f}', 
+        xy=(len(epochs), final_loss), 
+        xytext=(len(epochs) - len(epochs)*0.05, final_loss + (max_loss - min_loss)*0.1),
+        arrowprops=dict(arrowstyle='->', color='green', lw=2, alpha=0.8),
+        fontsize=11, fontweight='bold',
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="lightgreen", alpha=0.8, 
+                  edgecolor='green', linewidth=1.5)
+    )
+    if max_loss > 0:
+        improvement_pct = ((max_loss - min_loss) / max_loss) * 100
+        plt.text(0.02, 0.98, f'Loss Reduction: {improvement_pct:.2f}%', 
+                transform=plt.gca().transAxes, fontsize=12, fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.4", facecolor="lightblue", alpha=0.8),
+                verticalalignment='top')
+    last_5_epochs = total_loss[-5:] if len(total_loss) >= 5 else total_loss
+    convergence_std = np.std(last_5_epochs)
+    convergence_status = "Converged" if convergence_std < 0.001 else "Still Learning"
     
+    plt.text(0.02, 0.88, f'Convergence: {convergence_status}\nStd (last 5): {convergence_std:.6f}', 
+            transform=plt.gca().transAxes, fontsize=11, fontweight='bold',
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="lightcyan", alpha=0.8),
+            verticalalignment='top')
+    plt.legend(fontsize=12, loc='upper right', frameon=True, fancybox=True, 
+               shadow=True, framealpha=0.9)
+    y_range = max_loss - min_loss
+    plt.ylim(min_loss - y_range*0.1, max_loss + y_range*0.2)
+    plt.xlim(0.5, len(epochs) + 0.5)
+    plt.gca().set_facecolor('#f8f9fa')
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Total loss plot saved to: {save_path}")
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+        print(f"total loss plot saved to: {save_path}")
     
     plt.show()
 if __name__ == "__main__":
@@ -489,7 +538,7 @@ if __name__ == "__main__":
     loss_history = perfect_fit_training(
         model, dataloader, feat_mean, feat_std, epochs=5, lr=5e-5
     )
-    plot_total_loss_only(loss_history, save_path=None)
+    plot_total_loss_only(loss_history, save_path="local-llm/total_loss_plot_v6(Ep5).png")
     required_seeds = raw[:2000]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
