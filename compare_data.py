@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 from scipy.stats import skew, kurtosis, entropy, wasserstein_distance
 from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
@@ -121,6 +122,21 @@ plt.show()
 # real_freq_stats, _, _ = compute_frequency_domain_features(real, fs)
 # synth_freq_stats, _, _ = compute_frequency_domain_features(synthetic, fs)
 # print_comparison_stats(real_freq_stats, synth_freq_stats, domain="Frequency")
+def plot_kde(real, synthetic, labels=('Real', 'Synthetic'), title='KDE Plot of Signals'):
+    plt.figure(figsize=(10, 5))
+    
+    sns.kdeplot(real, label=labels[0], fill=True, color='blue', linewidth=2, alpha=0.6)
+    sns.kdeplot(synthetic, label=labels[1], fill=True, color='orange', linewidth=2, alpha=0.6)
+    
+    plt.title(title)
+    plt.xlabel("Value")
+    plt.ylabel("Density")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+plot_kde(real, synthetic)
+
 def interpolate_to_match(a, b):
     len_a, len_b = len(a), len(b)
     if len_a == len_b:
