@@ -511,7 +511,7 @@ def plot_total_loss_only(loss_history, save_path=None):
     
     plt.show()
 if __name__ == "__main__":
-    csv_path = "original_data.csv"
+    csv_path = "CWRU_data/N.csv"
     window_size = 256
     raw = load_data_from_csv(csv_path, window_size=window_size)
     dataset = ContinuousSensorDataset(raw, window_size=window_size)
@@ -530,7 +530,7 @@ if __name__ == "__main__":
         n_heads=8,
         n_layers=8,
         d_ff=1024,
-        dropout=0.3,
+        dropout=0.45,
         feature_dim=feature_count
     )
     
