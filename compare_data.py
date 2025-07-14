@@ -7,7 +7,7 @@ from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
 real = pd.read_csv("CWRU_data/N.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/local-llm-data-v6(Ep5).csv", header=None)[0].values.astype(float)
+synthetic = pd.read_csv("local-llm/previous_version_data/local-llm-data-v6(Ep10).csv", header=None)[0].values.astype(float)
 
 
 plt.figure(figsize=(16, 9))
@@ -167,15 +167,38 @@ def kl_divergence(arr1, arr2, bins=100):
     q_hist += 1e-10
     return entropy(p_hist, q_hist)
 
-def mmd(arr1, arr2, gamma=1.0):
-    X = arr1.reshape(-1, 1)
-    Y = arr2.reshape(-1, 1)
-    K_xx = rbf_kernel(X, X, gamma=gamma)
-    K_yy = rbf_kernel(Y, Y, gamma=gamma)
-    K_xy = rbf_kernel(X, Y, gamma=gamma)
-    return np.mean(K_xx) + np.mean(K_yy) - 2 * np.mean(K_xy)
+def mmd(arr1, arr2, gamma=1.0, window_size=10000):
+    # Interpolate to same length (minimum of both)
+    a, b = interpolate_to_match(arr1, arr2)
+    min_len = min(len(a), len(b))
+    
+    a = a[:min_len]
+    b = b[:min_len]
 
-def compute_all_metrics(signal_dict, fs=100):
+    num_windows = min_len // window_size
+    if num_windows == 0:
+        raise ValueError("Window size too large for given signals.")
+    
+    mmd_values = []
+
+    for i in range(num_windows):
+        start = i * window_size
+        end = start + window_size
+
+        window_a = a[start:end].reshape(-1, 1)
+        window_b = b[start:end].reshape(-1, 1)
+
+        K_xx = rbf_kernel(window_a, window_a, gamma=gamma)
+        K_yy = rbf_kernel(window_b, window_b, gamma=gamma)
+        K_xy = rbf_kernel(window_a, window_b, gamma=gamma)
+
+        mmd_val = np.mean(K_xx) + np.mean(K_yy) - 2 * np.mean(K_xy)
+        mmd_values.append(mmd_val)
+
+    return np.mean(mmd_values)
+
+
+def compute_all_metrics(signal_dict, fs=12000):
     keys = list(signal_dict.keys())
     for i in range(len(keys)):
         for j in range(i+1, len(keys)):
@@ -190,7 +213,7 @@ def compute_all_metrics(signal_dict, fs=100):
             print(f"KL Divergence (hist)    : {kl_divergence(arr1, arr2):.4f}")
             print(f"Maximum Mean Discrepancy: {mmd(arr1, arr2):.6f}")
 real = pd.read_csv("CWRU_data/N.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/local-llm-data-v6(Ep5).csv", header=None)[0].values.astype(float)
+synthetic = pd.read_csv("local-llm/previous_version_data/local-llm-data-v6(Ep10).csv", header=None)[0].values.astype(float)
 signals={
     'real': real,
     'synthetic': synthetic

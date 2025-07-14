@@ -394,7 +394,7 @@ def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=
                 0.1 * stat_losses['percentile'] +
                 0.05 * stat_losses['skew'] +
                 0.05 * stat_losses['kurtosis'] +
-                0.03 * freq_loss +
+                0.9* freq_loss +
                 0.02 * stats_loss
             )
             
@@ -536,12 +536,12 @@ if __name__ == "__main__":
     
     print(f"Model Parameters: {count_parameters(model):,}")
     loss_history = perfect_fit_training(
-        model, dataloader, feat_mean, feat_std, epochs=5, lr=5e-5
+        model, dataloader, feat_mean, feat_std, epochs=10, lr=5e-5
     )
-    plot_total_loss_only(loss_history, save_path="local-llm/total_loss_plot_v6(Ep5).png")
+    plot_total_loss_only(loss_history, save_path="local-llm/total_loss_plot_v6(Ep10).png")
     required_seeds = raw[:2000]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
     )
-    save_data_to_csv(synthetic_data, filename="local-llm/local-llm-data-v6(Ep5).csv")
+    save_data_to_csv(synthetic_data, filename="local-llm/previous_version_data/local-llm-data-v6(Ep10).csv")
     
