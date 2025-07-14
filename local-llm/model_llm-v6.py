@@ -335,7 +335,18 @@ def statistical_loss(pred, target):
         'skew': skew_loss,
         'kurtosis': kurt_loss
     }
+def pearson_loss(pred, target):
+    pred_centered = pred - torch.mean(pred, dim=1, keepdim=True)
+    target_centered = target - torch.mean(target, dim=1, keepdim=True)
+    numerator = torch.sum(pred_centered * target_centered, dim=1)
+    denominator = torch.sqrt(torch.sum(pred_centered**2, dim=1)) * torch.sqrt(torch.sum(target_centered**2, dim=1))
+    correlation = numerator / (denominator + 1e-8)
+    return 1 - correlation.mean()
 
+def cosine_loss(pred, target):
+    pred_norm = F.normalize(pred, dim=1)
+    target_norm = F.normalize(target, dim=1)
+    return 1 - torch.mean(torch.sum(pred_norm * target_norm, dim=1))
 def frequency_domain_loss(pred, target):
     pred_fft = torch.fft.fft(pred, dim=-1)
     target_fft = torch.fft.fft(target, dim=-1)
@@ -394,8 +405,10 @@ def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=
                 0.1 * stat_losses['percentile'] +
                 0.05 * stat_losses['skew'] +
                 0.05 * stat_losses['kurtosis'] +
-                0.9* freq_loss +
+                0.6* freq_loss +
                 0.02 * stats_loss
+                + 0.3 * pearson_loss(output, seqs)
+                + 0.3 * cosine_loss(output, seqs)
             )
             
             total_loss.backward()
@@ -536,12 +549,12 @@ if __name__ == "__main__":
     
     print(f"Model Parameters: {count_parameters(model):,}")
     loss_history = perfect_fit_training(
-        model, dataloader, feat_mean, feat_std, epochs=10, lr=5e-5
+        model, dataloader, feat_mean, feat_std, epochs=80, lr=5e-5
     )
-    plot_total_loss_only(loss_history, save_path="local-llm/total_loss_plot_v6(Ep10).png")
+    plot_total_loss_only(loss_history, save_path="local-llm/total_loss_plot_v6(Ep80).png")
     required_seeds = raw[:2000]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
     )
-    save_data_to_csv(synthetic_data, filename="local-llm/previous_version_data/local-llm-data-v6(Ep10).csv")
+    save_data_to_csv(synthetic_data, filename="local-llm/previous_version_data/local-llm-data-v6(Ep80).csv")
     
