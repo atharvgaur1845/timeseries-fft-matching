@@ -168,7 +168,6 @@ def kl_divergence(arr1, arr2, bins=100):
     return entropy(p_hist, q_hist)
 
 def mmd(arr1, arr2, gamma=1.0, window_size=10000):
-    # Interpolate to same length (minimum of both)
     a, b = interpolate_to_match(arr1, arr2)
     min_len = min(len(a), len(b))
     
@@ -176,9 +175,6 @@ def mmd(arr1, arr2, gamma=1.0, window_size=10000):
     b = b[:min_len]
 
     num_windows = min_len // window_size
-    if num_windows == 0:
-        raise ValueError("Window size too large for given signals.")
-    
     mmd_values = []
 
     for i in range(num_windows):
