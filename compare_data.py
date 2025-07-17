@@ -6,8 +6,8 @@ from scipy.stats import skew, kurtosis, entropy, wasserstein_distance
 from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
-real = pd.read_csv("CWRU_data/N.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/previous_version_data/local-llm-data-v6(Ep80).csv", header=None)[0].values.astype(float)
+real = pd.read_csv("data.csv", header=None)[0].values
+synthetic = pd.read_csv("local-llm/data_generated.csv", header=None)[0].values.astype(float)
 
 
 plt.figure(figsize=(16, 9))
@@ -208,8 +208,8 @@ def compute_all_metrics(signal_dict, fs=12000):
             print(f"Cosine Similarity       : {cosine_sim(arr1, arr2):.4f}")
             print(f"KL Divergence (hist)    : {kl_divergence(arr1, arr2):.4f}")
             print(f"Maximum Mean Discrepancy: {mmd(arr1, arr2):.6f}")
-real = pd.read_csv("CWRU_data/N.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/previous_version_data/local-llm-data-v6(Ep80).csv", header=None)[0].values.astype(float)
+real = pd.read_csv("data.csv", header=None)[0].values
+synthetic = pd.read_csv("local-llm/data_generated.csv", header=None)[0].values.astype(float)
 signals={
     'real': real,
     'synthetic': synthetic

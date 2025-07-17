@@ -9,6 +9,7 @@ import os
 from scipy.stats import skew, kurtosis, entropy
 from scipy import signal as scipy_signal
 import matplotlib.pyplot as plt
+from scipy import linalg
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 def compute_time_domain_features(signal):
     mean_val = np.mean(signal)
@@ -361,78 +362,88 @@ def frequency_domain_loss(pred, target):
     psd_loss = F.mse_loss(pred_psd, target_psd)
     
     return magnitude_loss + 0.5 * phase_loss + 0.5 * psd_loss
-def perfect_fit_training(model, dataloader, feat_mean, feat_std, epochs=200, lr=5e-5):
+def calculate_frechet_distance(features_real, features_synth):
+    mu_real, sigma_real = np.mean(features_real, axis=0), np.cov(features_real, rowvar=False)
+    mu_synth, sigma_synth = np.mean(features_synth, axis=0), np.cov(features_synth, rowvar=False)
+    ssdiff = np.sum((mu_real - mu_synth)**2.0)
+    covmean, _ = linalg.sqrtm(sigma_real.dot(sigma_synth), disp=False)
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
+    fid = ssdiff + np.trace(sigma_real + sigma_synth - 2.0 * covmean)
+    return fid
+def perfect_fit_training(model, dataloader, real_data_for_fid, feat_mean, feat_std, epochs=200, lr=5e-5, window_size=256, fs=12000):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-6)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
-    
-    model.train()
-    loss_history = {
-        'total': [], 'mse': [], 'mean': [], 'std': [], 'range': [], 
-        'percentile': [], 'skew': [], 'kurtosis': [], 'freq': [], 'stats': []
-    }
-    
+    loss_history = {k: [] for k in ['total', 'mse', 'mean', 'std', 'range', 'percentile', 'skew', 'kurtosis', 'freq', 'stats']}
+    fid_history = []
+    real_features = np.array([list(extract_combined_features(np.array(seg), fs).values()) for seg in real_data_for_fid])
+
     for epoch in range(epochs):
-        total_losses = {
-            'total': 0, 'mse': 0, 'mean': 0, 'std': 0, 'range': 0, 
-            'percentile': 0, 'skew': 0, 'kurtosis': 0, 'freq': 0, 'stats': 0
-        }
+        model.train() # Set model to training mode
+        total_losses = {k: 0 for k in loss_history.keys()}
         
         for batch in dataloader:
             seqs, feats = batch
             seqs, feats = seqs.to(device), feats.to(device)
             feats = (feats - feat_mean.to(device)) / feat_std.to(device)
             target_stats = torch.stack([
-                torch.mean(seqs, dim=-1),
-                torch.std(seqs, dim=-1),
+                torch.mean(seqs, dim=-1), torch.std(seqs, dim=-1),
                 torch.mean((seqs - torch.mean(seqs, dim=-1, keepdim=True))**3, dim=-1) / (torch.std(seqs, dim=-1)**3 + 1e-8),
                 torch.mean((seqs - torch.mean(seqs, dim=-1, keepdim=True))**4, dim=-1) / (torch.std(seqs, dim=-1)**4 + 1e-8),
                 torch.max(seqs, dim=-1)[0] - torch.min(seqs, dim=-1)[0]
             ], dim=-1)
             
             optimizer.zero_grad()
-        
             output, pred_stats = model(seqs, feats, target_stats)
+            
             stat_losses = statistical_loss(output, seqs)
             freq_loss = frequency_domain_loss(output, seqs)
             stats_loss = F.mse_loss(pred_stats, target_stats)
             total_loss = (
-                0.3 * stat_losses['mse'] +
-                0.2 * stat_losses['std'] +   
-                0.15 * stat_losses['mean'] +
-                0.1 * stat_losses['range'] +
-                0.1 * stat_losses['percentile'] +
-                0.05 * stat_losses['skew'] +
-                0.05 * stat_losses['kurtosis'] +
-                0.6* freq_loss +
-                0.3 * stats_loss
-                + 0.6 * pearson_loss(output, seqs)
-                + 0.6 * cosine_loss(output, seqs)
+                0.6 * stat_losses['mse'] + 0.9 * stat_losses['std'] + 0.2 * stat_losses['mean'] +
+                0.3 * stat_losses['range'] + 0.3 * stat_losses['percentile'] +
+                0.4 * stat_losses['skew'] + 0.4 * stat_losses['kurtosis'] +
+                1.2 * freq_loss + 1.2 * stats_loss +
+                1.8 * pearson_loss(output, seqs) + 1.8 * cosine_loss(output, seqs)
             )
             
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
-            
             optimizer.step()
+            
             total_losses['total'] += total_loss.item()
             for key, loss in stat_losses.items():
                 total_losses[key] += loss.item()
             total_losses['freq'] += freq_loss.item()
             total_losses['stats'] += stats_loss.item()
-        
+
         scheduler.step()
         avg_losses = {k: v / len(dataloader) for k, v in total_losses.items()}
         for key, value in avg_losses.items():
             loss_history[key].append(value)
         
-        current_lr = optimizer.param_groups[0]['lr']
-        
-        print(f"Epoch {epoch+1}/{epochs}")
-        print(f"Total: {avg_losses['total']:.6f}, MSE: {avg_losses['mse']:.6f}, STD: {avg_losses['std']:.6f}")
-        print(f"LR: {current_lr:.2e}, Residual Weight: {torch.sigmoid(model.residual_weight).item():.4f}")
-    
-    return loss_history
+        print(f"Epoch {epoch+1}/{epochs} | Total Loss: {avg_losses['total']:.6f} | MSE: {avg_losses['mse']:.6f} | STD: {avg_losses['std']:.6f}")
+        print(f"LR: {optimizer.param_groups[0]['lr']:.2e} | Residual Weight: {torch.sigmoid(model.residual_weight).item():.4f}")
+        model.eval()
+        synthetic_data_flat = generate_perfect_synthetic_data(
+            model, real_data_for_fid, feat_mean, feat_std, fs=fs, target_total=len(real_data_for_fid) * window_size
+        )
+        synthetic_features = []
+        for i in range(0, len(synthetic_data_flat) - window_size + 1, window_size):
+            segment = synthetic_data_flat[i:i+window_size]
+            if len(segment) == window_size:
+                feats = extract_combined_features(np.array(segment), fs)
+                synthetic_features.append(list(feats.values()))
+        if len(synthetic_features) > 1:
+            fid_score = calculate_frechet_distance(real_features, np.array(synthetic_features))
+            fid_history.append(fid_score)
+            print(f"Epoch {epoch+1} FID Score: {fid_score:.4f}")
+        else:
+            fid_history.append(np.nan) 
+
+    return loss_history, fid_history
 
 
 def generate_perfect_synthetic_data(model, seeds, feat_mean, feat_std, fs=12000, target_total=4800):
@@ -523,12 +534,46 @@ def plot_total_loss_only(loss_history, save_path=None):
         print(f"total loss plot saved to: {save_path}")
     
     plt.show()
+def plot_fid_history(fid_history, save_path=None):
+    plt.figure(figsize=(14, 8))
+    epochs = range(1, len(fid_history) + 1)
+    valid_fids = [f for f in fid_history if not np.isnan(f)]
+    
+    plt.plot(epochs, fid_history, 'g-', linewidth=3, marker='s', markersize=6,
+             markerfacecolor='white', markeredgecolor='green', markeredgewidth=2,
+             label='FID Score', alpha=0.9)
+    
+    plt.title('FID Score Over Epochs', fontsize=20, fontweight='bold', pad=20)
+    plt.xlabel('Epoch', fontsize=16, fontweight='bold')
+    plt.ylabel('Fréchet Distance (FID)', fontsize=16, fontweight='bold')
+    plt.grid(True, alpha=0.6, linestyle='--', linewidth=1)
+    if valid_fids:
+        min_fid = min(valid_fids)
+        min_epoch = fid_history.index(min_fid) + 1
+        plt.scatter(min_epoch, min_fid, color='blue', s=200, zorder=5,
+                    marker='*', label='Best FID', edgecolor='darkblue', linewidth=2)
+        plt.axhline(y=min_fid, color='blue', linestyle='--', linewidth=2, alpha=0.7)
+        plt.axvline(x=min_epoch, color='blue', linestyle='--', linewidth=2, alpha=0.7)
+        plt.annotate(
+            f'Best FID: {min_fid:.4f}\nEpoch: {min_epoch}',
+            xy=(min_epoch, min_fid),
+            xytext=(min_epoch + len(epochs)*0.05, min_fid + (max(valid_fids) - min_fid)*0.1),
+            arrowprops=dict(arrowstyle='->', color='blue', lw=2.5),
+            fontsize=12, fontweight='bold',
+            bbox=dict(boxstyle="round,pad=0.6", facecolor="lightblue", alpha=0.9)
+        )
+    plt.legend(fontsize=12, loc='upper right', frameon=True, fancybox=True)
+    plt.gca().set_facecolor('#f8f9fa')
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white') 
+    plt.show()
 if __name__ == "__main__":
     csv_path = "data.csv"
-    window_size = 256
+    window_size = 1024
     raw = load_data_from_csv(csv_path, window_size=window_size)
     dataset = ContinuousSensorDataset(raw, window_size=window_size)
-
+    fs = 12000
     sample_features = extract_combined_features(np.random.randn(window_size), 12000)
     feature_count = len(sample_features)
     print(f"Feature count: {feature_count} features")
@@ -543,15 +588,17 @@ if __name__ == "__main__":
         n_heads=8,
         n_layers=8,
         d_ff=1024,
-        dropout=0.45,
+        dropout=0.2,
         feature_dim=feature_count
     )
     
     print(f"Model Parameters: {count_parameters(model):,}")
-    loss_history = perfect_fit_training(
-        model, dataloader, feat_mean, feat_std, epochs=20, lr=5e-5
+    loss_history, fid_history = perfect_fit_training(
+        model, dataloader, raw, feat_mean, feat_std, 
+        epochs=20, lr=5e-5, window_size=window_size, fs=fs
     )
     plot_total_loss_only(loss_history, save_path="local-llm/total-loss--data_generated.png")
+    plot_fid_history(fid_history, save_path="local-llm/fid-history--data_generated.png")
     required_seeds = raw[:2000]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
