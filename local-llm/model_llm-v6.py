@@ -250,7 +250,7 @@ class StatisticalMatchingHead(nn.Module):
 
 class MultiHead_Model(nn.Module):
 
-    def __init__(self, input_len=256, d_model=512, n_heads=8, n_layers=8, d_ff=1024, dropout=0.05, feature_dim=47):
+    def __init__(self, input_len, d_model, n_heads=16, n_layers=8, d_ff=1024, dropout=0.05, feature_dim=47):
         super().__init__()
         self.feature_proj = nn.Sequential(
             nn.Linear(feature_dim, d_model // 4),
@@ -402,11 +402,17 @@ def perfect_fit_training(model, dataloader, real_data_for_fid, feat_mean, feat_s
             freq_loss = frequency_domain_loss(output, seqs)
             stats_loss = F.mse_loss(pred_stats, target_stats)
             total_loss = (
-                0.6 * stat_losses['mse'] + 0.9 * stat_losses['std'] + 0.2 * stat_losses['mean'] +
-                0.3 * stat_losses['range'] + 0.3 * stat_losses['percentile'] +
-                0.4 * stat_losses['skew'] + 0.4 * stat_losses['kurtosis'] +
-                1.2 * freq_loss + 1.2 * stats_loss +
-                1.8 * pearson_loss(output, seqs) + 1.8 * cosine_loss(output, seqs)
+                0.3 * stat_losses['mse'] +
+                0.2 * stat_losses['std'] +   
+                0.15 * stat_losses['mean'] +
+                0.1 * stat_losses['range'] +
+                0.1 * stat_losses['percentile'] +
+                0.2 * stat_losses['skew'] +
+                0.2 * stat_losses['kurtosis'] +
+                0.6 * freq_loss +
+                0.6 * stats_loss+
+                0.5 * pearson_loss(output, seqs) +
+                0.5 * cosine_loss(output, seqs)
             )
             
             total_loss.backward()
@@ -584,8 +590,8 @@ if __name__ == "__main__":
     
     model = MultiHead_Model(
         input_len=window_size,
-        d_model=512,
-        n_heads=8,
+        d_model=2048,
+        n_heads=32,
         n_layers=8,
         d_ff=1024,
         dropout=0.2,
