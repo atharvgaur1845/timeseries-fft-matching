@@ -381,7 +381,7 @@ def perfect_fit_training(model, dataloader, real_data_for_fid, feat_mean, feat_s
     real_features = np.array([list(extract_combined_features(np.array(seg), fs).values()) for seg in real_data_for_fid])
 
     for epoch in range(epochs):
-        model.train() # Set model to training mode
+        model.train()
         total_losses = {k: 0 for k in loss_history.keys()}
         
         for batch in dataloader:
@@ -432,22 +432,22 @@ def perfect_fit_training(model, dataloader, real_data_for_fid, feat_mean, feat_s
         
         print(f"Epoch {epoch+1}/{epochs} | Total Loss: {avg_losses['total']:.6f} | MSE: {avg_losses['mse']:.6f} | STD: {avg_losses['std']:.6f}")
         print(f"LR: {optimizer.param_groups[0]['lr']:.2e} | Residual Weight: {torch.sigmoid(model.residual_weight).item():.4f}")
-        model.eval()
-        synthetic_data_flat = generate_perfect_synthetic_data(
-            model, real_data_for_fid, feat_mean, feat_std, fs=fs, target_total=len(real_data_for_fid) * window_size
-        )
-        synthetic_features = []
-        for i in range(0, len(synthetic_data_flat) - window_size + 1, window_size):
-            segment = synthetic_data_flat[i:i+window_size]
-            if len(segment) == window_size:
-                feats = extract_combined_features(np.array(segment), fs)
-                synthetic_features.append(list(feats.values()))
-        if len(synthetic_features) > 1:
-            fid_score = calculate_frechet_distance(real_features, np.array(synthetic_features))
-            fid_history.append(fid_score)
-            print(f"Epoch {epoch+1} FID Score: {fid_score:.4f}")
-        else:
-            fid_history.append(np.nan) 
+        # model.eval()
+        # synthetic_data_flat = generate_perfect_synthetic_data(
+        #     model, real_data_for_fid, feat_mean, feat_std, fs=fs, target_total=len(real_data_for_fid) * window_size
+        # )
+        # synthetic_features = []
+        # for i in range(0, len(synthetic_data_flat) - window_size + 1, window_size):
+        #     segment = synthetic_data_flat[i:i+window_size]
+        #     if len(segment) == window_size:
+        #         feats = extract_combined_features(np.array(segment), fs)
+        #         synthetic_features.append(list(feats.values()))
+        # if len(synthetic_features) > 1:
+        #     fid_score = calculate_frechet_distance(real_features, np.array(synthetic_features))
+        #     fid_history.append(fid_score)
+        #     print(f"Epoch {epoch+1} FID Score: {fid_score:.4f}")
+        # else:
+        #     fid_history.append(np.nan) 
 
     return loss_history, fid_history
 
@@ -590,8 +590,8 @@ if __name__ == "__main__":
     
     model = MultiHead_Model(
         input_len=window_size,
-        d_model=2048,
-        n_heads=32,
+        d_model=512,
+        n_heads=8,
         n_layers=8,
         d_ff=1024,
         dropout=0.2,
@@ -604,10 +604,10 @@ if __name__ == "__main__":
         epochs=20, lr=5e-5, window_size=window_size, fs=fs
     )
     plot_total_loss_only(loss_history, save_path="local-llm/total-loss--data_generated.png")
-    plot_fid_history(fid_history, save_path="local-llm/fid-history--data_generated.png")
-    required_seeds = raw[:2000]
+    #plot_fid_history(fid_history, save_path="local-llm/fid-history--data_generated.png")
+    required_seeds = raw[:20000]
     synthetic_data = generate_perfect_synthetic_data(
-        model, required_seeds, feat_mean, feat_std, target_total=48000
+        model, required_seeds, feat_mean, feat_std, target_total=480000
     )
     save_data_to_csv(synthetic_data, filename="local-llm/data_generated.csv")
     
