@@ -249,22 +249,21 @@ class StatisticalMatchingHead(nn.Module):
         return stats
 
 class MultiHead_Model(nn.Module):
-
     def __init__(self, input_len, d_model, n_heads=16, n_layers=8, d_ff=1024, dropout=0.05, feature_dim=47):
         super().__init__()
-        self.feature_proj = nn.Sequential(
-            nn.Linear(feature_dim, d_model // 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 4, d_model)
-        )
-        self.input_proj = nn.Sequential(
-            nn.Linear(1, d_model // 2),
-            nn.GELU(),
-            nn.Linear(d_model // 2, d_model)
-        )
+
+        self.feature_proj_fc1 = nn.Linear(feature_dim, d_model // 4)
+        self.feature_proj_act = nn.GELU()
+        self.feature_proj_drop = nn.Dropout(dropout)
+        self.feature_proj_fc2 = nn.Linear(d_model // 4, d_model)
+
+        self.input_proj_fc1 = nn.Linear(1, d_model // 2)
+        self.input_proj_act = nn.GELU()
+        self.input_proj_fc2 = nn.Linear(d_model // 2, d_model)
+
         self.pos_emb = nn.Parameter(torch.randn(1, input_len, d_model) * 0.02)
-        self.blocks = nn.ModuleList([
+
+        self.transformer_encoder = nn.ModuleList([
             nn.TransformerEncoderLayer(
                 d_model=d_model,
                 nhead=n_heads,
@@ -274,33 +273,40 @@ class MultiHead_Model(nn.Module):
                 batch_first=True
             ) for _ in range(n_layers)
         ])
+        self.output_norm = nn.LayerNorm(d_model)
+        self.output_fc1 = nn.Linear(d_model, d_model // 2)
+        self.output_act = nn.GELU()
+        self.output_fc2 = nn.Linear(d_model // 2, 1)
+
         self.stats_head = StatisticalMatchingHead(d_model)
-        self.output_proj = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_model // 2),
-            nn.GELU(),
-            nn.Linear(d_model // 2, 1)
-        )
         self.residual_weight = nn.Parameter(torch.tensor(0.8))
-        
+
     def forward(self, x, feats, target_stats=None):
         B, T = x.size()
-        x_emb = self.input_proj(x.unsqueeze(-1))
+        x_emb = self.input_proj_fc1(x.unsqueeze(-1))
+        x_emb = self.input_proj_act(x_emb)
+        x_emb = self.input_proj_fc2(x_emb)
+
         x_emb = x_emb + self.pos_emb[:, :T, :]
-        feat_emb = self.feature_proj(feats)  
-        feat_emb = feat_emb.unsqueeze(1) 
-        feat_emb = feat_emb * 0.01
+        feat_emb = self.feature_proj_fc1(feats)
+        feat_emb = self.feature_proj_act(feat_emb)
+        feat_emb = self.feature_proj_drop(feat_emb)
+        feat_emb = self.feature_proj_fc2(feat_emb)
+
+        feat_emb = feat_emb.unsqueeze(1) * 0.01
         x_emb = x_emb + feat_emb.expand(-1, T, -1)
-        for block in self.blocks:
+
+        for block in self.transformer_encoder:
             x_emb = block(x_emb)
-        # output = self.output_proj(x_emb).squeeze(-1)
-        # residual_output = torch.sigmoid(self.residual_weight) * x + (1 - torch.sigmoid(self.residual_weight)) * output
-        # pred_stats = self.stats_head(x_emb)
-        x_transformed = self.output_proj(x_emb).squeeze(-1)
-        output = x + x_transformed
+        x_out = self.output_norm(x_emb)
+        x_out = self.output_fc1(x_out)
+        x_out = self.output_act(x_out)
+        x_out = self.output_fc2(x_out).squeeze(-1)
+        output = x + x_out
         pred_stats = self.stats_head(x_emb)
-        
+
         return output, pred_stats
+
 
 def statistical_loss(pred, target):
     mse_loss = F.mse_loss(pred, target)
