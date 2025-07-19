@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-data = pd.read_csv("local-llm/local-llm-data-v6.csv", header=None)
+data = pd.read_csv("train_data_70.csv", header=None)
 signal = data[0].values
 #sampling freq
 fs = 12000 
