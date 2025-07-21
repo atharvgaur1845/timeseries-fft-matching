@@ -6,7 +6,7 @@ from scipy.stats import skew, kurtosis, entropy, wasserstein_distance
 from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
-real = pd.read_csv("test_data_30.csv", header=None)[0].values
+real = pd.read_csv("data.csv", header=None)[0].values
 synthetic = pd.read_csv("local-llm/data_generated.csv", header=None)[0].values.astype(float)
 real = real[:48000]
 synthetic = synthetic[:48000]   
@@ -202,7 +202,7 @@ def compute_all_metrics(signal_dict, fs=12000):
             name1, name2 = keys[i], keys[j]
             arr1, arr2 = signal_dict[name1], signal_dict[name2]
 
-            print(f"\nComparing '{name1}' vs '{name2}':")
+            print(f"\nComparing test vs train:")
             print(f"Lengths: {len(arr1)} vs {len(arr2)}")
 
             print(f"Pearson Correlation     : {pearson_corr(arr1, arr2):.4f}")

@@ -302,7 +302,7 @@ class MultiHead_Model(nn.Module):
         x_out = self.output_fc1(x_out)
         x_out = self.output_act(x_out)
         x_out = self.output_fc2(x_out).squeeze(-1)
-        output = x + x_out
+        output = 0.1*x + 0.9*x_out
         pred_stats = self.stats_head(x_emb)
 
         return output, pred_stats
@@ -582,8 +582,8 @@ def plot_fid_history(fid_history, save_path=None):
         plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white') 
     plt.show()
 if __name__ == "__main__":
-    csv_path = "train_data_70.csv"
-    window_size = 1024
+    csv_path = "data.csv"
+    window_size = 2048
     raw = load_data_from_csv(csv_path, window_size=window_size)
     dataset = ContinuousSensorDataset(raw, window_size=window_size)
     fs = 12000
@@ -608,13 +608,21 @@ if __name__ == "__main__":
     print(f"Model Parameters: {count_parameters(model):,}")
     loss_history, fid_history = perfect_fit_training(
         model, dataloader, raw, feat_mean, feat_std, 
-        epochs=20, lr=5e-5, window_size=window_size, fs=fs
+        epochs=15, lr=5e-5, window_size=window_size, fs=fs
     )
     plot_total_loss_only(loss_history, save_path="local-llm/total-loss--data_generated.png")
     #plot_fid_history(fid_history, save_path="local-llm/fid-history--data_generated.png")
-    required_seeds = raw[:2000]
+    np.random.seed(42)
+    signal_features = [np.std(seg) for seg in raw]
+    bins = np.quantile(signal_features, np.linspace(0, 1, 5))
+    stratified_indices = []
+    for i in range(len(bins)-1):
+        mask = (signal_features >= bins[i]) & (signal_features < bins[i+1])
+        indices = np.where(mask)[0]
+        stratified_indices.extend(np.random.choice(indices, size=40, replace=False))
+    required_seeds = [raw[i] for i in stratified_indices]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
     )
     save_data_to_csv(synthetic_data, filename="local-llm/data_generated.csv")
-    
+
