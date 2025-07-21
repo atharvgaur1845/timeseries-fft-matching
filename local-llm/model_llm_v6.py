@@ -480,20 +480,23 @@ def generate_perfect_synthetic_data(model, seeds, feat_mean, feat_std, fs=12000,
     return all_generated[:target_total]
 def plot_total_loss_only(loss_history, save_path=None):
     plt.figure(figsize=(14, 8))
-    epochs = range(1, len(loss_history['total']) + 1)
-    total_loss = loss_history['total']
+    epochs = range(2, len(loss_history['total']) + 1)
+    total_loss = loss_history['total'][1:]
+    
     plt.plot(epochs, total_loss, 'b-', linewidth=3, marker='o', markersize=6, 
              markerfacecolor='white', markeredgecolor='blue', markeredgewidth=2, 
              label='Total Loss', alpha=0.9)
-    plt.title('Training Loss Analysis', 
+    
+    plt.title('Training Loss Analysis (Excluding Epoch 1)', 
               fontsize=20, fontweight='bold', pad=20)
     plt.xlabel('Epoch', fontsize=16, fontweight='bold')
     plt.ylabel('Total Loss', fontsize=16, fontweight='bold')
     plt.grid(True, alpha=0.6, linestyle='--', linewidth=1)
+    
     min_loss = min(total_loss)
     max_loss = max(total_loss)
-    min_epoch = total_loss.index(min_loss) + 1
-    max_epoch = total_loss.index(max_loss) + 1
+    min_epoch = total_loss.index(min_loss) + 2
+    max_epoch = total_loss.index(max_loss) + 2
     final_loss = total_loss[-1]
     plt.scatter(min_epoch, min_loss, color='red', s=150, zorder=5, 
                 marker='*', label='Minimum Loss', edgecolor='darkred', linewidth=2)
@@ -512,7 +515,7 @@ def plot_total_loss_only(loss_history, save_path=None):
     )
     plt.annotate(
         f'Final Loss: {final_loss:.6f}', 
-        xy=(len(epochs), final_loss), 
+        xy=(len(epochs)+1, final_loss), 
         xytext=(len(epochs) - len(epochs)*0.05, final_loss + (max_loss - min_loss)*0.1),
         arrowprops=dict(arrowstyle='->', color='green', lw=2, alpha=0.8),
         fontsize=11, fontweight='bold',
@@ -528,7 +531,6 @@ def plot_total_loss_only(loss_history, save_path=None):
     last_5_epochs = total_loss[-5:] if len(total_loss) >= 5 else total_loss
     convergence_std = np.std(last_5_epochs)
     convergence_status = "Converged" if convergence_std < 0.001 else "Still Learning"
-    
     plt.text(0.02, 0.88, f'Convergence: {convergence_status}\nStd (last 5): {convergence_std:.6f}', 
             transform=plt.gca().transAxes, fontsize=11, fontweight='bold',
             bbox=dict(boxstyle="round,pad=0.4", facecolor="lightcyan", alpha=0.8),
@@ -537,7 +539,7 @@ def plot_total_loss_only(loss_history, save_path=None):
                shadow=True, framealpha=0.9)
     y_range = max_loss - min_loss
     plt.ylim(min_loss - y_range*0.1, max_loss + y_range*0.2)
-    plt.xlim(0.5, len(epochs) + 0.5)
+    plt.xlim(1.5, len(epochs) + 1.5)  # Adjusted x-axis limits
     plt.gca().set_facecolor('#f8f9fa')
     plt.xticks(fontsize=12)
     plt.yticks(fontsize=12)
@@ -616,10 +618,20 @@ if __name__ == "__main__":
     signal_features = [np.std(seg) for seg in raw]
     bins = np.quantile(signal_features, np.linspace(0, 1, 5))
     stratified_indices = []
+    desired_per_bin = 40
     for i in range(len(bins)-1):
         mask = (signal_features >= bins[i]) & (signal_features < bins[i+1])
         indices = np.where(mask)[0]
-        stratified_indices.extend(np.random.choice(indices, size=40, replace=False))
+        n_samples = min(desired_per_bin, len(indices))
+        if n_samples > 0:  
+            stratified_indices.extend(np.random.choice(indices, size=n_samples, replace=False))
+    total_needed = 200
+    if len(stratified_indices) < total_needed:
+        remaining_indices = list(set(range(len(raw))) - set(stratified_indices))
+        if remaining_indices:
+            additional_samples = min(total_needed - len(stratified_indices), len(remaining_indices))
+            stratified_indices.extend(np.random.choice(remaining_indices, size=additional_samples, replace=False))
+
     required_seeds = [raw[i] for i in stratified_indices]
     synthetic_data = generate_perfect_synthetic_data(
         model, required_seeds, feat_mean, feat_std, target_total=48000
