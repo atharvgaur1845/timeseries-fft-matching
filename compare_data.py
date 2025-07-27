@@ -22,7 +22,7 @@ plt.grid(True)
 plt.show()
 
 #fft
-fs = 12000 
+fs = 25600
 N = len(real)
 
 # Compute FFTs
@@ -202,7 +202,7 @@ def compute_all_metrics(signal_dict, fs=12000):
             name1, name2 = keys[i], keys[j]
             arr1, arr2 = signal_dict[name1], signal_dict[name2]
 
-            print(f"\nComparing test vs train:")
+            print(f"\nComparing real vs synthetic:")
             print(f"Lengths: {len(arr1)} vs {len(arr2)}")
 
             print(f"Pearson Correlation     : {pearson_corr(arr1, arr2):.4f}")

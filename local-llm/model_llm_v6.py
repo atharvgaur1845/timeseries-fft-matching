@@ -293,7 +293,7 @@ class MultiHead_Model(nn.Module):
         feat_emb = self.feature_proj_drop(feat_emb)
         feat_emb = self.feature_proj_fc2(feat_emb)
 
-        feat_emb = feat_emb.unsqueeze(1) * 0.01
+        feat_emb = feat_emb.unsqueeze(1) * 0.1
         x_emb = x_emb + feat_emb.expand(-1, T, -1)
 
         for block in self.transformer_encoder:
@@ -302,7 +302,8 @@ class MultiHead_Model(nn.Module):
         x_out = self.output_fc1(x_out)
         x_out = self.output_act(x_out)
         x_out = self.output_fc2(x_out).squeeze(-1)
-        output = 0.1*x + 0.9*x_out
+        residual_scale = torch.sigmoid(self.residual_weight) * 0.2
+        output = residual_scale * x + (1 - residual_scale) * x_out
         pred_stats = self.stats_head(x_emb)
 
         return output, pred_stats
@@ -410,16 +411,19 @@ def perfect_fit_training(model, dataloader, real_data_for_fid, feat_mean, feat_s
             stat_losses = statistical_loss(output, seqs)
             freq_loss = frequency_domain_loss(output, seqs)
             stats_loss = F.mse_loss(pred_stats, target_stats)
+            pearson = pearson_loss(output, seqs)
+            cosine = cosine_loss(output, seqs)
             total_loss = (
-                0.3 * stat_losses['mse'] +
-                0.2 * stat_losses['std'] +   
-                0.15 * stat_losses['mean'] +
-                0.1 * stat_losses['range'] +
-                0.1 * stat_losses['percentile'] +
+                1.5* stat_losses['mse'] +
+                0.9 * stat_losses['std'] +   
+                0.3 * stat_losses['mean'] +
+                0.3 * stat_losses['range'] +
+                0.3 * stat_losses['percentile'] +
                 0.2 * stat_losses['skew'] +
                 0.2 * stat_losses['kurtosis'] +
-                0.6 * freq_loss +
-                0.6 * stats_loss
+                1.2 * freq_loss +
+                0.4 * stats_loss+
+                0.5 * pearson + 0.5 * cosine
             )
             
             total_loss.backward()
@@ -539,7 +543,7 @@ def plot_total_loss_only(loss_history, save_path=None):
                shadow=True, framealpha=0.9)
     y_range = max_loss - min_loss
     plt.ylim(min_loss - y_range*0.1, max_loss + y_range*0.2)
-    plt.xlim(1.5, len(epochs) + 1.5)  # Adjusted x-axis limits
+    plt.xlim(1.5, len(epochs) + 1.5)
     plt.gca().set_facecolor('#f8f9fa')
     plt.xticks(fontsize=12)
     plt.yticks(fontsize=12)
@@ -603,14 +607,14 @@ if __name__ == "__main__":
         n_heads=8,
         n_layers=8,
         d_ff=1024,
-        dropout=0.4,
+        dropout=0.1,
         feature_dim=feature_count
     )
     
     print(f"Model Parameters: {count_parameters(model):,}")
     loss_history, fid_history = perfect_fit_training(
         model, dataloader, raw, feat_mean, feat_std, 
-        epochs=15, lr=5e-5, window_size=window_size, fs=fs
+        epochs=20, lr=5e-5, window_size=window_size, fs=fs
     )
     plot_total_loss_only(loss_history, save_path="local-llm/total-loss--data_generated.png")
     #plot_fid_history(fid_history, save_path="local-llm/fid-history--data_generated.png")
