@@ -7,7 +7,7 @@ from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
 real = pd.read_csv("data.csv", header=None)[0].values
-synthetic = pd.read_csv("local-llm/data_generated.csv", header=None)[0].values.astype(float)
+synthetic = pd.read_csv("WGAN-GP/synthetic_data/synthetic_data.csv", header=None)[0].values.astype(float)
 real = real[:48000]
 synthetic = synthetic[:48000]   
 

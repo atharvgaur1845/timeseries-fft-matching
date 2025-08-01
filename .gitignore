@@ -1,2 +1,4 @@
 /bitsandbytes
 /local-llm/best_model.pth
+/WGAN-GP/synthetic_data/synthetic_data.csv
+/local-llm/multihead_model.onnx
