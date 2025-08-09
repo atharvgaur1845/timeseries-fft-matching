@@ -11,6 +11,7 @@ from scipy.stats import skew, kurtosis, entropy
 from scipy import signal as scipy_signal
 import matplotlib.pyplot as plt
 from scipy import linalg
+import scipy.linalg
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
@@ -100,24 +101,38 @@ def compute_frequency_domain_features(signal, fs):
         'spectral_flatness': float(flatness)
     }
 
-def calculate_frechet_distance(features_real, features_synth):
-    eps = 1e-6
-    mu_real = np.mean(features_real, axis=0)
-    mu_synth = np.mean(features_synth, axis=0)
-    sigma_real = np.cov(features_real, rowvar=False) + eps * np.eye(features_real.shape[1])
-    sigma_synth = np.cov(features_synth, rowvar=False) + eps * np.eye(features_synth.shape[1])
+def calculate_fid(features1, features2, eps=1e-6):
+    mu1 = np.mean(features1, axis=0)
+    mu2 = np.mean(features2, axis=0)
     
-    ssdiff = np.sum((mu_real - mu_synth)**2.0)
+    sigma1 = np.cov(features1, rowvar=False)
+    sigma2 = np.cov(features2, rowvar=False)
+    sigma1 = sigma1.astype(np.float64) + np.eye(sigma1.shape[0]) * eps
+    sigma2 = sigma2.astype(np.float64) + np.eye(sigma2.shape[0]) * eps
     
     try:
-        covmean = linalg.sqrtm(sigma_real.dot(sigma_synth))
+        covmean, sqrtm_info = scipy.linalg.sqrtm(sigma1.dot(sigma2), disp=False)
+        
         if np.iscomplexobj(covmean):
+            if not np.allclose(np.diag(covmean).imag, 0, atol=1e-3):
+                print("Warning: Imaginary component in covariance matrix square root")
             covmean = covmean.real
-        fid = ssdiff + np.trace(sigma_real + sigma_synth - 2.0 * covmean)
-    except:
-        fid = ssdiff + np.trace(sigma_real) + np.trace(sigma_synth)
+        if not np.isfinite(covmean).all():
+            print("Warning: Non-finite values in covmean, using identity matrix")
+            covmean = np.eye(covmean.shape[0])
+            
+    except Exception as e:
+        print(f"Matrix square root failed: {e}, using approximation")
+        eigvals, eigvecs = np.linalg.eigh(sigma1.dot(sigma2))
+        eigvals = np.maximum(eigvals, 0)  
+        covmean = eigvecs.dot(np.diag(np.sqrt(eigvals))).dot(eigvecs.T)
     
-    return float(fid)
+    diff = mu1 - mu2
+    fid = np.dot(diff, diff) + np.trace(sigma1 + sigma2 - 2 * covmean)
+    
+    return max(0.0, float(fid))
+
+
 
 def advanced_statistical_features(signal):
     return {
@@ -232,18 +247,33 @@ def sensor_specific_features(signal, fs):
     }
 
 def extract_combined_features(signal, fs):
+    signal = np.array(signal, dtype=np.float64)
+    if not np.isfinite(signal).all():
+        signal = np.nan_to_num(signal, nan=0.0, posinf=1.0, neginf=-1.0)
+    signal_std = np.std(signal)
+    if signal_std > 1e-6:
+        signal = (signal - np.mean(signal)) / signal_std
+    
     time_feats = compute_time_domain_features(signal)
     freq_feats = compute_frequency_domain_features(signal, fs)
     advanced_feats = advanced_statistical_features(signal)
     spectrogram_feats = spectrogram_features(signal, fs)
     nonlinear_feats = nonlinear_features(signal)
     sensor_feats = sensor_specific_features(signal, fs)
+    
     all_features = {**time_feats, **freq_feats, **advanced_feats,
                    **spectrogram_feats, **nonlinear_feats, **sensor_feats}
     for key, value in all_features.items():
-        if np.isnan(value) or np.isinf(value):
+        if not np.isfinite(value) or abs(value) > 1e6:
             all_features[key] = 0.0
+    feature_array = np.array(list(all_features.values()))
+    if np.std(feature_array) > 0:
+        feature_array = np.clip(feature_array, -10, 10)  
+        for i, key in enumerate(all_features.keys()):
+            all_features[key] = float(feature_array[i])
+    
     return all_features
+
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -346,7 +376,6 @@ class Generator(nn.Module):
         x = self.tanh(x)
         x = x.squeeze(1)
         return x
-
 class PatchEmbedding(nn.Module):
     def __init__(self, seq_len, embed_dim, patch_size=4):
         super(PatchEmbedding, self).__init__()
@@ -407,16 +436,6 @@ class Critic(nn.Module):
         if return_features:
             return self.classifier(x).squeeze(-1), intermediate_features
         return self.classifier(x).squeeze(-1)
-
-def calculate_frechet_distance(features_real, features_synth):
-    mu_real, sigma_real = np.mean(features_real, axis=0), np.cov(features_real, rowvar=False)
-    mu_synth, sigma_synth = np.mean(features_synth, axis=0), np.cov(features_synth, rowvar=False)
-    ssdiff = np.sum((mu_real - mu_synth)**2.0)
-    covmean, _ = linalg.sqrtm(sigma_real.dot(sigma_synth), disp=False)
-    if np.iscomplexobj(covmean):
-        covmean = covmean.real
-    fid = ssdiff + np.trace(sigma_real + sigma_synth - 2.0 * covmean)
-    return fid
 
 class GANDataset(Dataset):
     def __init__(self, data, window_size=300, fs=25000):
@@ -510,17 +529,20 @@ class TTSWGANQGP:
 
     def train_step(self, real_data):
         batch_size = real_data.size(0)
-        
-        self.critic.zero_grad()
-        noise = torch.randn(batch_size, self.noise_dim).to(self.device)
-        fake_data = self.generator(noise).detach()
-        
-        real_output = self.critic(real_data)
-        fake_output = self.critic(fake_data)
-        gp = self.gradient_penalty(real_data, fake_data)
-        critic_loss = fake_output.mean() - real_output.mean() + self.lambda_gp * gp
-        critic_loss.backward()
-        self.optimizer_c.step()
+        for _ in range(2):
+            self.critic.zero_grad()
+            noise = torch.randn(batch_size, self.noise_dim).to(self.device)
+            fake_data = self.generator(noise).detach()
+            
+            real_output = self.critic(real_data)
+            fake_output = self.critic(fake_data)
+            
+            gp = self.gradient_penalty(real_data, fake_data)
+            critic_loss = fake_output.mean() - real_output.mean() + self.lambda_gp * gp
+            
+            critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+            self.optimizer_c.step()
         
         self.generator.zero_grad()
         noise = torch.randn(batch_size, self.noise_dim).to(self.device)
@@ -528,10 +550,12 @@ class TTSWGANQGP:
         fake_output = self.critic(fake_data)
         adversarial_loss = -fake_output.mean()
         freq_loss = self.frequency_loss(real_data, fake_data)
-        fm_loss = self.feature_matching_loss(real_data, fake_data)
+        fm_loss = self.feature_matching_loss(real_data, fake_data)  
         
-        generator_loss = adversarial_loss + self.lambda_freq * freq_loss + 0.5 * fm_loss
+        generator_loss = adversarial_loss + 0.01 * freq_loss + 0.001 * fm_loss  
+        
         generator_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.generator.parameters(), max_norm=1.0)
         self.optimizer_g.step()
         
         return {
@@ -539,9 +563,11 @@ class TTSWGANQGP:
             'generator_loss': generator_loss.item(),
             'adversarial_loss': adversarial_loss.item(),
             'frequency_loss': freq_loss.item(),
-            'feature_matching_loss': fm_loss.item(),
-            'gradient_penalty': gp.item()
+            'gradient_penalty': gp.item(),
+            'feature_matching_loss': fm_loss.item()  
         }
+
+
 
     def generate_samples(self, num_samples):
         self.generator.eval()
@@ -565,11 +591,18 @@ class TTSWGANQGP:
     def compute_fid_score(self, real_data, num_samples=1000):
         synthetic_samples = self.generate_samples(num_samples)
         real_samples = real_data[:num_samples]
-        
-        real_features = np.array([list(extract_combined_features(np.array(seg), 25000).values()) for seg in real_samples])
-        synth_features = np.array([list(extract_combined_features(np.array(seg), 25000).values()) for seg in synthetic_samples])
-        
-        return calculate_frechet_distance(real_features, synth_features)
+
+        real_features = np.array([
+            list(extract_combined_features(np.array(seg), 25000).values())
+            for seg in real_samples
+        ])
+        synth_features = np.array([
+            list(extract_combined_features(np.array(seg), 25000).values())
+            for seg in synthetic_samples
+        ])
+
+        return calculate_fid(real_features, synth_features)
+
 
 def load_data_from_csv(csv_file_path, window_size=300):
     df = pd.read_csv(csv_file_path, header=None)
@@ -593,7 +626,7 @@ def plot_total_loss_only(loss_history, save_path=None):
     total_loss = loss_history['total'][1:]
     plt.plot(epochs, total_loss, 'b-', linewidth=3, marker='o', markersize=6,
              markerfacecolor='white', markeredgecolor='blue', markeredgewidth=2,
-             label='Total Loss', alpha=0.9)
+             label='Critic Loss', alpha=0.9)
     plt.title('Training Loss Analysis (Excluding Epoch 1)', fontsize=20, fontweight='bold', pad=20)
     plt.xlabel('Epoch', fontsize=16, fontweight='bold')
     plt.ylabel('Total Loss', fontsize=16, fontweight='bold')
@@ -672,7 +705,7 @@ def advanced_training(model, dataloader, real_data_for_fid, epochs=200, window_s
             seqs = batch.to(device)
             losses = model.train_step(seqs)
             
-            total_loss = losses['generator_loss'] + losses['critic_loss']
+            total_loss = losses['critic_loss']
             epoch_losses['total'].append(total_loss)
             
             for key in ['critic_loss', 'generator_loss', 'adversarial_loss', 
@@ -713,7 +746,8 @@ def advanced_training(model, dataloader, real_data_for_fid, epochs=200, window_s
 def train_model_with_csv(csv_file_path, output_dir="WGAN-GP/synthetic_data", epochs=200, batch_size=128, window_size=300, fs=25000):
     if torch.cuda.is_available():
         torch.cuda.init()
-        torch.cuda.set_device(0)
+        torch.cuda.empty_cache() 
+        torch.backends.cudnn.benchmark = True 
     raw_data = load_data_from_csv(csv_file_path, window_size=window_size)
     dataset = GANDataset(raw_data, window_size=window_size, fs=fs)
     
@@ -742,7 +776,7 @@ def train_model_with_csv(csv_file_path, output_dir="WGAN-GP/synthetic_data", epo
     )
     
     plot_total_loss_only(loss_history, save_path=os.path.join(output_dir, "total_loss.png"))
-    target_total = len(raw_data) * window_size
+    target_total = len(raw_data)
     synthetic_samples = model.generate_samples(target_total)
     synthetic_data_flat = synthetic_samples.flatten()
     synthetic_data_denormalized = (synthetic_data_flat + 1) * (data_max - data_min) / 2 + data_min
@@ -764,7 +798,7 @@ if __name__ == "__main__":
     trained_model, synthetic_data = train_model_with_csv(
         csv_file_path=csv_file_path,
         output_dir="WGAN-GP/synthetic_data",
-        epochs=200,
+        epochs=20,
         batch_size=128,
         window_size=window_size,
         fs=25000

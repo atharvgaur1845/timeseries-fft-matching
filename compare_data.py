@@ -6,10 +6,10 @@ from scipy.stats import skew, kurtosis, entropy, wasserstein_distance
 from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
-real = pd.read_csv("data.csv", header=None)[0].values
-synthetic = pd.read_csv("WGAN-GP/synthetic_data/synthetic_data.csv", header=None)[0].values.astype(float)
-real = real[:48000]
-synthetic = synthetic[:48000]   
+real = pd.read_csv("enhanced_sample_timeseries.csv", header=None)[0].values
+synthetic = pd.read_csv("enhanced_synthetic_timeseries.csv", header=None)[0].values.astype(float)
+real = real[:7552]
+synthetic = synthetic  
 
 plt.figure(figsize=(16, 9))
 plt.plot(real[:1000], label='Real', alpha=0.7)
