@@ -1,3 +1,6 @@
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,97 +15,290 @@ from scipy import signal
 import torch.nn.functional as F
 import torch.fft as fft
 import os
+from scipy.stats import skew, kurtosis
+import random
 
-# Set random seeds for reproducibility
 torch.manual_seed(42)
 np.random.seed(42)
-
-# FIX 1: Safe CUDA backend wrapper
+if torch.cuda.is_available():
+    device = torch.device('cuda:0')
+    print(f"FORCED GPU USAGE: {torch.cuda.get_device_name(0)}")
+else:
+    print("CUDA not available - using CPU")
+    device = torch.device('cpu')
 try:
     if torch.cuda.is_available():
         torch.backends.cuda.enable_math_sdp(True)
         torch.backends.cuda.enable_flash_sdp(False)
         torch.backends.cuda.enable_mem_efficient_sdp(False)
 except Exception as e:
-    # ignore if flags not available in this build
     pass
 
-# CRITICAL BUG FIX 3: Robust window cache with proper device/dtype handling
 win_cache = {}
 def get_window(n_fft, device, dtype=torch.float32):
-    """Precomputed Hann windows with robust device/dtype handling"""
     key = (n_fft, device.type, device.index if device.type=='cuda' else -1, dtype)
     if key not in win_cache:
         win_cache[key] = torch.hann_window(n_fft, device=device, dtype=dtype)
     return win_cache[key]
 
-# FIX 2: Time-domain losses
-def time_domain_l1_loss(real, fake):
-    """Direct waveform L1 loss for envelope/timing matching"""
-    if real.dim() == 3:
-        real = real.squeeze(-1)
-        fake = fake.squeeze(-1)
-    return F.l1_loss(fake, real)
-
-def derivative_l1_loss(real, fake):
-    """First-order derivative loss for temporal smoothness"""
-    if real.dim() == 3:
-        real = real.squeeze(-1)
-        fake = fake.squeeze(-1)
-    dr = real[:, 1:] - real[:, :-1]
-    df = fake[:, 1:] - fake[:, :-1]
-    return F.l1_loss(df, dr)
-
-# CRITICAL BUG FIX 2: PSD loss with hop=0 protection
-def batch_log_psd(x, n_fft=256, hop=128):
-    """Compute log PSD using Welch-like method with proper n_fft sizing and hop protection"""
-    if x.dim() == 3:
-        x = x.squeeze(-1)
+# XAVIER INITIALIZATION
+def init_weights_xavier(m):
+    if isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d)):
+        nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+def complex_spectral_loss(pred, target, n_fft=256, hop=None, power=0.3, device=None):
+    """
+    CRITICAL FIX: Power-compressed magnitude + complex STFT + instantaneous frequency
+    Returns dict with mag_loss (power-compressed), complex_l1 (real+imag),
+    phase_loss (wrapped), inst_freq_loss (time-derivative of phase).
+    """
+    if pred.dim() == 3:
+        pred = pred.squeeze(-1)
+        target = target.squeeze(-1)
     
-    seq_len = x.size(1)
-    # CRITICAL FIX: Ensure n_fft doesn't exceed seq_len
+    seq_len = pred.size(1)
     n_fft = min(n_fft, seq_len)
-    # CRITICAL BUG FIX 2: Ensure hop at least 1 and not larger than quarter length
-    hop = max(1, min(hop, max(1, seq_len // 4)))
+    if hop is None:
+        hop = max(1, n_fft // 4)
     
-    window = get_window(n_fft, x.device, x.dtype)  # Use robust cached window
-    S = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=n_fft, window=window, return_complex=True)
-    P = (S.abs() ** 2).mean(dim=-1)   # (B, F)
-    return torch.log(P + 1e-8)
+    window = get_window(n_fft, pred.device, pred.dtype)
 
-def psd_loss(real, fake, n_fft=256, hop=128):
-    """Power spectral density matching loss"""
-    pr = batch_log_psd(real, n_fft=n_fft, hop=hop)
-    pf = batch_log_psd(fake, n_fft=n_fft, hop=hop)
-    return F.mse_loss(pf, pr)
+    
+    S_pred = torch.stft(pred, n_fft=n_fft, hop_length=hop, win_length=n_fft, window=window, return_complex=True)
+    S_tgt  = torch.stft(target, n_fft=n_fft, hop_length=hop, win_length=n_fft, window=window, return_complex=True)
 
-# FIX 2: Autocorrelation loss with simplified nfft calculation
-def autocorr(x):
-    """Returns autocorr for lags 0..L-1, x: (B,L) or (B,L,1)"""
+    mag_pred = S_pred.abs()
+    mag_tgt  = S_tgt.abs()
+
+    comp_pred = (mag_pred + 1e-8) ** power  
+    comp_tgt  = (mag_tgt + 1e-8) ** power
+    mag_loss = F.l1_loss(comp_pred, comp_tgt)  
+
+    complex_loss = F.l1_loss(S_pred.real, S_tgt.real) + F.l1_loss(S_pred.imag, S_tgt.imag)
+
+    
+    phase_pred = torch.angle(S_pred)
+    phase_tgt  = torch.angle(S_tgt)
+    phase_diff = torch.angle(torch.exp(1j * (phase_pred - phase_tgt))) 
+    phase_loss = F.mse_loss(phase_diff, torch.zeros_like(phase_diff))
+
+    if phase_pred.size(-1) > 1:
+        dphase_pred = phase_pred[:, :, 1:] - phase_pred[:, :, :-1]
+        dphase_tgt  = phase_tgt[:, :, 1:] - phase_tgt[:, :, :-1]
+        dphase_pred = torch.angle(torch.exp(1j * dphase_pred))
+        dphase_tgt  = torch.angle(torch.exp(1j * dphase_tgt))
+        inst_freq_loss = F.mse_loss(dphase_pred, dphase_tgt)
+    else:
+        inst_freq_loss = torch.tensor(0.0, device=pred.device)
+    pred_norm = comp_pred / (comp_pred.sum(dim=(1,2), keepdim=True) + 1e-8)
+    tgt_norm  = comp_tgt  / (comp_tgt.sum(dim=(1,2), keepdim=True) + 1e-8)
+    shape_loss = F.mse_loss(pred_norm, tgt_norm)
+
+    return {
+        'mag': mag_loss,
+        'complex': complex_loss,
+        'phase': phase_loss,
+        'inst_freq': inst_freq_loss,
+        'shape': shape_loss
+    }
+
+def spectrogram_shape(x, n_fft=256, hop=None, power=0.3):
+    """Per-sample normalized spectrogram for shape-only learning"""
+    if hop is None:
+        hop = max(1, n_fft//4)
+    x = x.squeeze(-1)
+    seq_len = x.size(1)
+    n_fft = min(n_fft, seq_len)
+    
+    S = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=n_fft, 
+                   window=get_window(n_fft, x.device, x.dtype), return_complex=True)
+    mag = (S.abs() + 1e-8) ** power
+    mag_norm = mag / (mag.sum(dim=(1,2), keepdim=True) + 1e-8)
+    return mag_norm.unsqueeze(1)  # shape (B,1,F,T)
+
+def per_band_mse(real, fake, n_fft=256):
+    """Monitor per-frequency-bin MSE to find problematic bands"""
+    real = real.squeeze(-1)
+    fake = fake.squeeze(-1)
+    seq_len = real.size(1)
+    n_fft = min(n_fft, seq_len)
+    
+    S_r = torch.stft(real, n_fft=n_fft, return_complex=True)
+    S_f = torch.stft(fake, n_fft=n_fft, return_complex=True)
+    mse_per_bin = ((S_r.abs() - S_f.abs())**2).mean(dim=-1).mean(dim=0)  # shape freq_bins
+    return mse_per_bin.cpu().numpy()
+class PatchSpecDiscriminator(nn.Module):
+    """Small patch-based spectrogram discriminator for local texture learning"""
+    def __init__(self, n_fft=128):
+        super().__init__()
+        self.n_fft = n_fft
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 16, 3, padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(16, 32, 3, padding=1), 
+            nn.LeakyReLU(0.2),
+            nn.AdaptiveAvgPool2d((8,8)),
+            nn.Flatten(),
+            nn.Linear(32*8*8, 64),
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 1)
+        )
+    
+    def forward(self, x):
+        # x: (B, L, 1)
+        x = x.squeeze(-1)
+        seq_len = x.size(1)
+        n_fft = min(self.n_fft, seq_len)
+        hop = max(1, n_fft//4)
+        
+        S = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=n_fft, 
+                       window=get_window(n_fft, x.device, x.dtype), return_complex=True)
+        mag = torch.log(S.abs() + 1e-8).unsqueeze(1)  # (B, 1, F, T)
+        return self.net(mag)
+
+def normalize_per_sample(x, eps=1e-8):
+    """Normalize each sample individually to prevent amplitude cheating"""
     if x.dim() == 3:
         x = x.squeeze(-1)
-    n = x.shape[-1]
-    # CRITICAL FIX: Simplified power-of-2 calculation
-    nfft = 1 << int(np.ceil(np.log2(n)))  # Fast, clear power-of-2 >= n
-    X = fft.rfft(x, n=nfft)
-    S = (X * torch.conj(X)).real
-    ac = fft.irfft(S, n=nfft)
-    ac = ac[:, :n]
-    return ac
+    mu = x.mean(dim=1, keepdim=True)
+    std = x.std(dim=1, keepdim=True).clamp(min=eps)
+    x_norm = (x - mu) / std
+    amp = torch.cat([mu, std], dim=1)  # shape (B, 2)
+    return x_norm.unsqueeze(-1), amp
 
-def autocorr_loss(real, fake, max_lag=128):
-    """Autocorrelation matching for periodic patterns"""
-    ar = autocorr(real)[:, :max_lag]
-    af = autocorr(fake)[:, :max_lag]
-    # CRITICAL FIX: Better numerical stability
-    ar = ar / (ar[:, :1].clamp(min=1e-8))
-    af = af / (af[:, :1].clamp(min=1e-8))
-    return F.mse_loss(af, ar)
+def apply_amplitude_augmentations(x, aug_prob=0.3):
+    """Apply random amplitude scaling augmentation"""
+    if random.random() < aug_prob:
+        scale = 0.9 + 0.2 * torch.rand(x.size(0), 1, 1, device=x.device)  
+        return x * scale
+    return x
 
-# FIX 3: Improved Multi-Resolution STFT Loss with cached windows and hop protection
-def mrstft_loss(real, fake, n_ffts=(64, 128, 256), hop_factor=0.25):
-    """Multi-resolution STFT: spectral-convergence + log-mag L1 averaged across valid scales."""
-    # Accept shapes (B,L,1) or (B,L)
+def apply_time_augmentations(x, aug_prob=0.2): 
+    """Apply time domain augmentations"""
+    if random.random() < aug_prob:
+        max_shift = min(3, x.size(1) // 20)  
+        shift = random.randint(-max_shift, max_shift)
+        if shift != 0:
+            if shift > 0:
+                x = torch.cat([x[:, shift:], x[:, :shift]], dim=1)
+            else:
+                x = torch.cat([x[:, shift:], x[:, :shift]], dim=1)
+    return x
+
+class RobustCriticTimeFreq(nn.Module):
+    """Multi-stream critic with time and frequency domain analysis"""
+    def __init__(self, seq_len=128, d_model=64, nhead=4, num_layers=4):
+        super().__init__()
+        self.seq_len = seq_len
+        self.d_model = d_model
+
+        self.time_conv = nn.Sequential(
+            nn.Conv1d(1, 64, kernel_size=7, padding=3, stride=1),
+            nn.GELU(),
+            nn.Conv1d(64, d_model, kernel_size=5, padding=2),
+            nn.GroupNorm(1, d_model),
+        )
+        
+        self.pos_encoding = LearnablePositionalEncoding(d_model, seq_len)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*4, 
+            batch_first=True, dropout=0.1
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+
+        self.freq_cnn = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=(3,3), padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d((2,2)),
+            nn.Conv2d(16, 32, kernel_size=(3,3), padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4,4)),
+            nn.Flatten()
+        )
+
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveAvgPool1d(1)
+
+        self.fusion_fc = nn.Sequential(
+            nn.utils.spectral_norm(nn.Linear(d_model*2 + 32*4*4, d_model)),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.2),
+            nn.utils.spectral_norm(nn.Linear(d_model, 1))
+        )
+
+    def forward(self, x, return_features=False):
+        if x.dim() == 3:
+            x_t = x.transpose(1,2)
+        else:
+            x_t = x.unsqueeze(1)
+
+        t = self.time_conv(x_t)
+        t = t.transpose(1,2)
+        t = self.pos_encoding(t)
+        t = self.transformer(t)
+        
+        t_trans = t.transpose(1,2)
+        t_avg = self.global_pool(t_trans).squeeze(-1)
+        t_max = self.max_pool(t_trans).squeeze(-1)
+        t_pool = torch.cat([t_avg, t_max], dim=1)
+
+        n_fft = min(256, self.seq_len)
+        hop = max(1, n_fft // 4)
+        x_flat = x.squeeze(-1)
+        S = torch.stft(x_flat, n_fft=n_fft, hop_length=hop, win_length=n_fft,
+                       window=get_window(n_fft, x.device, x.dtype), return_complex=True)
+        mag = S.abs()
+        log_mag = torch.log(mag + 1e-8).unsqueeze(1)
+        f = self.freq_cnn(log_mag)
+        fused = torch.cat([t_pool, f], dim=1)
+        out = self.fusion_fc(fused)
+        
+        if return_features:
+            return out, fused
+        return out
+
+def sample_patches(x, patch_len=32, num_patches=4):
+    """Sample random patches from sequences"""
+    B, L, _ = x.shape
+    if L < patch_len:
+        return x.repeat(num_patches, 1, 1)
+    
+    patches = []
+    for _ in range(num_patches):
+        starts = torch.randint(0, L - patch_len + 1, (B,), device=x.device)
+        idx = starts.unsqueeze(1) + torch.arange(patch_len, device=x.device).unsqueeze(0)
+        p = x.squeeze(-1)[torch.arange(B).unsqueeze(1), idx]
+        patches.append(p.unsqueeze(-1))
+    return torch.cat(patches, dim=0)
+
+class PatchCritic(nn.Module):
+    """Critic operating on short patches"""
+    def __init__(self, patch_len=32, d_model=32):
+        super().__init__()
+        self.patch_len = patch_len
+        
+        self.conv_layers = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=7, padding=3),
+            nn.LeakyReLU(0.2),
+            nn.Conv1d(32, 64, kernel_size=5, padding=2),
+            nn.LeakyReLU(0.2),
+            nn.AdaptiveAvgPool1d(8),
+            nn.Flatten(),
+            nn.Linear(64 * 8, d_model),
+            nn.LeakyReLU(0.2),
+            nn.Linear(d_model, 1)
+        )
+    
+    def forward(self, x):
+        if x.dim() == 3:
+            x = x.transpose(1, 2)
+        else:
+            x = x.unsqueeze(1)
+        return self.conv_layers(x)
+
+def mrstft_loss(real, fake, n_ffts=(64, 128, 256, 512), hop_factor=0.25):
+    """multi-resolution STFT"""
     if real.dim() == 3:
         real = real.squeeze(-1)
         fake = fake.squeeze(-1)
@@ -111,23 +307,20 @@ def mrstft_loss(real, fake, n_ffts=(64, 128, 256), hop_factor=0.25):
     total = 0.0
     scales = 0
     for n_fft in n_ffts:
-        # CRITICAL FIX: Ensure n_fft doesn't exceed seq_len
         if n_fft > seq_len:
             continue
-        # CRITICAL BUG FIX 2: Consistent hop calculation with protection
         hop = max(1, min(int(n_fft * hop_factor), max(1, seq_len // 4)))
-        window = get_window(n_fft, real.device, real.dtype)  # Use robust cached window
+        window = get_window(n_fft, real.device, real.dtype)
+        
         real_s = torch.stft(real, n_fft=n_fft, hop_length=hop, win_length=n_fft, window=window, return_complex=True)
         fake_s = torch.stft(fake, n_fft=n_fft, hop_length=hop, win_length=n_fft, window=window, return_complex=True)
+        
         mag_r = real_s.abs()
         mag_f = fake_s.abs()
 
-        # spectral convergence (Frobenius)
         num = torch.linalg.norm((mag_r - mag_f).reshape(mag_r.size(0), -1), dim=1)
         den = torch.linalg.norm(mag_r.reshape(mag_r.size(0), -1), dim=1).clamp_min(1e-8)
         sc = (num / den).mean()
-
-        # log mag l1
         lm = F.l1_loss(torch.log(mag_f + 1e-8), torch.log(mag_r + 1e-8))
 
         total = total + sc + lm
@@ -137,52 +330,9 @@ def mrstft_loss(real, fake, n_ffts=(64, 128, 256), hop_factor=0.25):
         return torch.tensor(0.0, device=real.device)
     return total / scales
 
-# --- Torch-based spectral feature extractor with window caching ---
-def extract_torch_spectral_features(x, n_fft=None, hop_length=None, device=None):
-    """Fast spectral feature extraction with cached windows"""
-    if device is None:
-        device = x.device
-    
-    x = x.squeeze(-1) # (B, seq)
-    seq_len = x.size(1)
-    
-    # Auto-adjust n_fft with proper sizing
-    if n_fft is None or n_fft > seq_len:
-        n_fft = min(256, seq_len // 2 * 2)
-    if hop_length is None:
-        hop_length = n_fft // 4
-    
-    n_fft = min(n_fft, seq_len)
-    hop_length = max(1, min(hop_length, max(1, seq_len // 4)))  # Protection against hop=0
-    
-    # IMPROVEMENT: Use cached window
-    window = get_window(n_fft, device, x.dtype)
-    stft = torch.stft(x, n_fft=n_fft, hop_length=hop_length, win_length=n_fft, window=window, return_complex=True)
-    mag = torch.abs(stft) # (B, F, T)
-    
-    # Summary features
-    mag_mean = mag.mean(dim=-1) # (B, F)
-    mag_std = mag.std(dim=-1) # (B, F)
-    
-    # Spectral centroid and bandwidth
-    freqs = torch.linspace(0, 0.5, mag.size(1), device=device)
-    centroid = (mag_mean * freqs).sum(dim=1) / (mag_mean.sum(dim=1) + 1e-8)
-    bandwidth = torch.sqrt(((freqs - centroid.unsqueeze(1))**2 * mag_mean).sum(dim=1) / (mag_mean.sum(dim=1) + 1e-8))
-    
-    features = torch.cat([mag_mean, mag_std, centroid.unsqueeze(1), bandwidth.unsqueeze(1)], dim=1)
-    return features
-
-# --- Instance noise for stability ---
-def add_instance_noise(x, sigma):
-    """Add instance noise that decays during training"""
-    if sigma <= 0:
-        return x
-    return x + (sigma * torch.randn_like(x))
-
-class SimpleLearnablePositionalEncoding(nn.Module):
-    """Fixed learnable positional encoding"""
+class LearnablePositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=1000):
-        super(SimpleLearnablePositionalEncoding, self).__init__()
+        super(LearnablePositionalEncoding, self).__init__()
         self.pos_embedding = nn.Parameter(torch.randn(max_len, d_model) * 0.02)
         self.max_len = max_len
 
@@ -195,26 +345,22 @@ class SimpleLearnablePositionalEncoding(nn.Module):
         pos_enc = pos_enc.expand(batch_size, -1, -1)
         return x + pos_enc
 
-class FixedImprovedGenerator(nn.Module):
-    """Generator with all critical fixes applied"""
+class Generator(nn.Module):
+    """Generator for spectral learning with output clipping"""
     def __init__(self, noise_dim=64, seq_len=128, d_model=64, nhead=4, num_layers=6):
-        super(FixedImprovedGenerator, self).__init__()
+        super(Generator, self).__init__()
         self.seq_len = seq_len
         self.d_model = d_model
         self.noise_dim = noise_dim
 
-        # FIX 4: Remove Tanh from latent upsampler
         self.latent_upsampler = nn.Sequential(
             nn.Linear(noise_dim, d_model * 2),
             nn.GELU(),
             nn.Linear(d_model * 2, seq_len * d_model),
-            # no Tanh! leave it linear so transformer can shape it
         )
 
-        # Positional encoding
-        self.pos_encoding = SimpleLearnablePositionalEncoding(d_model, seq_len)
+        self.pos_encoding = LearnablePositionalEncoding(d_model, seq_len)
 
-        # Transformer layers - FIX 5: Smaller by default
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -225,7 +371,6 @@ class FixedImprovedGenerator(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
 
-        # Fixed temporal convolution with GroupNorm
         self.temporal_conv = nn.Sequential(
             nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, groups=d_model),
             nn.GELU(),
@@ -233,154 +378,135 @@ class FixedImprovedGenerator(nn.Module):
             nn.GroupNorm(1, d_model)
         )
 
-        # CRITICAL FIX: Remove final Tanh for better distribution matching
+
         self.output_projection = nn.Sequential(
-            nn.utils.spectral_norm(nn.Linear(d_model, d_model // 2)),
+            nn.Linear(d_model, d_model // 2),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.utils.spectral_norm(nn.Linear(d_model // 2, 1)),
-            # REMOVED nn.Tanh() - rely on loss regularization instead
-        )
+            nn.Linear(d_model // 2, 1),
+            nn.Tanh() )
 
-        # DC bias with regularization
         self.dc_bias = nn.Parameter(torch.zeros(1))
 
     def forward(self, noise):
         batch_size = noise.size(0)
-        
-        # Upsample single latent vector to sequence
-        x = self.latent_upsampler(noise) # (B, seq_len * d_model)
-        x = x.view(batch_size, self.seq_len, self.d_model) # (B, seq_len, d_model)
-        
-        # Add positional encoding
+        x = self.latent_upsampler(noise)
+        x = x.view(batch_size, self.seq_len, self.d_model)
         x = self.pos_encoding(x)
-        
-        # Apply transformer
         x = self.transformer(x)
-        
-        # Apply temporal convolution
-        x_conv = x.transpose(1, 2) # (B, D, L)
+        x_conv = x.transpose(1, 2)
         x_conv = self.temporal_conv(x_conv)
-        x_conv = x_conv.transpose(1, 2) # (B, L, D)
-        
-        # Residual connection
+        x_conv = x_conv.transpose(1, 2)
         x = x + x_conv
-        
-        # Output projection (no Tanh!)
         output = self.output_projection(x)
         output = output + self.dc_bias
-        
         return output
 
     def get_dc_regularization(self):
-        """DC bias regularization"""
         return 0.01 * self.dc_bias.pow(2).mean()
-
-class FixedImprovedCritic(nn.Module):
-    """Critic with all critical fixes applied"""
-    def __init__(self, seq_len=128, d_model=64, nhead=4, num_layers=6):
-        super(FixedImprovedCritic, self).__init__()
-        self.seq_len = seq_len
-        self.d_model = d_model
-
-        # Input projection with spectral normalization
-        self.input_projection = nn.utils.spectral_norm(
-            nn.Linear(1, d_model)
-        )
-
-        # Positional encoding
-        self.pos_encoding = SimpleLearnablePositionalEncoding(d_model, seq_len)
-
-        # Transformer layers - FIX 5: Smaller by default
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=d_model * 4,
-            dropout=0.1,
-            activation='gelu',
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-
-        # Fixed temporal convolution with GroupNorm
-        self.temporal_conv = nn.Sequential(
-            nn.Conv1d(d_model, d_model, kernel_size=5, padding=2, groups=d_model),
-            nn.GELU(),
-            nn.Conv1d(d_model, d_model, kernel_size=1),
-            nn.GroupNorm(1, d_model)
-        )
-
-        # Multi-scale pooling
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
-        self.max_pool = nn.AdaptiveMaxPool1d(1)
-
-        # Output classifier
-        self.classifier = nn.Sequential(
-            nn.utils.spectral_norm(nn.Linear(d_model * 2, d_model)),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.2),
-            nn.utils.spectral_norm(nn.Linear(d_model, 1))
-        )
-
-    def forward(self, x):
-        # Project input
-        x = self.input_projection(x)
+    
+def analyze_batch_spectral(real, fake, save_path=None):
+    """Comprehensive spectral """
+    real = real.squeeze(-1).cpu().numpy()
+    fake = fake.squeeze(-1).cpu().numpy()
+    
+    plt.figure(figsize=(15, 10))
+    
+    # Time domain comparison
+    plt.subplot(2, 3, 1)
+    plt.plot(real[0], label='Real', alpha=0.8)
+    plt.plot(fake[0], label='Fake', alpha=0.8)
+    plt.title('Time Domain Comparison')
+    plt.legend()
+    plt.grid(True)
+    
+    # spectrogram plotting 
+    def safe_specgram(x, title, subplot_pos):
+        plt.subplot(2, 3, subplot_pos)
+        signal_len = len(x)
         
-        # Add positional encoding
-        x = self.pos_encoding(x)
+        if signal_len >= 256:
+            NFFT = 128
+            noverlap = 96
+        elif signal_len >= 128:
+            NFFT = 64
+            noverlap = 48
+        elif signal_len >= 64:
+            NFFT = 32
+            noverlap = 24
+        else:
+            NFFT = min(16, signal_len)
+            noverlap = max(1, int(NFFT * 0.5))
         
-        # Apply transformer
-        x = self.transformer(x)
-        
-        # Apply temporal convolution
-        x_conv = x.transpose(1, 2) # (B, D, L)
-        x_conv = self.temporal_conv(x_conv)
-        x_conv = x_conv.transpose(1, 2) # (B, L, D)
-        
-        # Residual connection
-        x = x + x_conv
-        
-        # Multi-scale pooling
-        x = x.transpose(1, 2) # (B, D, L) for pooling
-        avg_pooled = self.global_pool(x).squeeze(-1)
-        max_pooled = self.max_pool(x).squeeze(-1)
-        combined = torch.cat([avg_pooled, max_pooled], dim=1)
-        
-        output = self.classifier(combined)
-        return output
+        if noverlap >= NFFT:
+            noverlap = NFFT - 1
+            
+        try:
+            plt.specgram(x, NFFT=NFFT, noverlap=noverlap, Fs=1, cmap='viridis')
+            plt.title(title)
+            plt.colorbar()
+        except Exception as e:
+            plt.plot(np.abs(np.fft.fft(x))[:len(x)//2])
+            plt.title(f'{title} (FFT fallback)')
+            print(f"Specgram failed for {title}, using FFT: {e}")
+    
+    safe_specgram(real[0], 'Real Spectrogram', 2)
+    safe_specgram(fake[0], 'Fake Spectrogram', 3)
+    
+    # FFT comparison
+    plt.subplot(2, 3, 4)
+    real_fft = np.abs(np.fft.fft(real[0]))[:len(real[0])//2]
+    fake_fft = np.abs(np.fft.fft(fake[0]))[:len(fake[0])//2]
+    freqs = np.fft.fftfreq(len(real[0]))[:len(real[0])//2]
+    plt.semilogy(freqs, real_fft, label='Real FFT', alpha=0.8)
+    plt.semilogy(freqs, fake_fft, label='Fake FFT', alpha=0.8)
+    plt.title('Frequency Spectrum')
+    plt.legend()
+    plt.grid(True)
+    
+    # Statistical comparison
+    plt.subplot(2, 3, 5)
+    real_stats = [np.mean(real[0]), np.std(real[0])]
+    fake_stats = [np.mean(fake[0]), np.std(fake[0])]
+    x = ['Mean', 'Std']
+    width = 0.35
+    plt.bar([i - width/2 for i in range(len(x))], real_stats, width, label='Real', alpha=0.7)
+    plt.bar([i + width/2 for i in range(len(x))], fake_stats, width, label='Fake', alpha=0.7)
+    plt.title('Statistical Comparison')
+    plt.ylabel('Value')
+    plt.xticks(range(len(x)), x)
+    plt.legend()
+    plt.grid(True)
+    
+    # Spectral centroids
+    plt.subplot(2, 3, 6)
+    def compute_centroid(signal):
+        fft_vals = np.fft.fft(signal)
+        mag = np.abs(fft_vals[:len(signal)//2])
+        freqs = np.fft.fftfreq(len(signal))[:len(signal)//2]
+        mag_norm = mag / (np.sum(mag) + 1e-8)
+        return np.sum(freqs * mag_norm)
+    
+    real_centroids = [compute_centroid(r) for r in real[:5]]
+    fake_centroids = [compute_centroid(f) for f in fake[:5]]
+    
+    plt.scatter(range(len(real_centroids)), real_centroids, label='Real', alpha=0.7)
+    plt.scatter(range(len(fake_centroids)), fake_centroids, label='Fake', alpha=0.7)
+    plt.title('Spectral Centroids')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Spectral analysis saved to {save_path}")
+    plt.show()
 
-class FastFeatureExtractor(nn.Module):
-    """Fast pytorch-only feature extractor for FID"""
-    def __init__(self, seq_len=128):
-        super(FastFeatureExtractor, self).__init__()
-        self.feature_net = nn.Sequential(
-            nn.Conv1d(1, 32, kernel_size=7, padding=3),
-            nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.Conv1d(32, 64, kernel_size=5, padding=2),
-            nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.Conv1d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool1d(8),
-            nn.Flatten(),
-            nn.Linear(128 * 8, 256),
-            nn.ReLU(),
-            nn.Linear(256, 128)
-        )
-
-    def forward(self, x):
-        x = x.transpose(1, 2)
-        features = self.feature_net(x)
-        return features
-
-def improved_gradient_penalty(critic, real_samples, fake_samples, device):
-    """Improved gradient penalty with CuDNN disabled"""
-    batch_size = real_samples.size(0)
+def gradient_penalty(critic, real_samples, fake_samples, device, lambda_gp=10):
+    batch_size = real_samples.size(0)  
     alpha = torch.rand(batch_size, 1, 1).to(device)
     interpolates = (alpha * real_samples + (1 - alpha) * fake_samples).requires_grad_(True)
 
-    # Disable CuDNN for gradient computation
     with torch.backends.cudnn.flags(enabled=False):
         d_interpolates = critic(interpolates)
         gradients = torch.autograd.grad(
@@ -396,20 +522,17 @@ def improved_gradient_penalty(critic, real_samples, fake_samples, device):
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
 
-def load_data_properly_fixed(csv_path, seq_len=128):
-    """Proper 50% overlap implementation"""
+def load_data_properly(csv_path, seq_len=128):
     df = pd.read_csv(csv_path)
     data = df.iloc[:, 0].values.reshape(-1, 1)
     print(f"Original data shape: {data.shape}")
     print(f"Data range: [{data.min():.4f}, {data.max():.4f}]")
 
-    # CRITICAL FIX: Adjust scaler range to match generator output (no Tanh)
-    scaler = MinMaxScaler(feature_range=(-1.0, 1.0))  # Wider range since no Tanh
+    scaler = MinMaxScaler(feature_range=(-1.0, 1.0))
     normalized_data = scaler.fit_transform(data)
 
-    # Proper 50% overlap
     sequences = []
-    stride = seq_len // 2 # 50% overlap
+    stride = seq_len // 2
     for i in range(0, len(normalized_data) - seq_len + 1, stride):
         sequences.append(normalized_data[i:i + seq_len])
 
@@ -417,328 +540,220 @@ def load_data_properly_fixed(csv_path, seq_len=128):
     print(f"Created {len(sequences)} sequences with 50% overlap, length {seq_len}")
     return torch.FloatTensor(sequences), scaler
 
-def compute_psd_metrics(real_data, fake_data, n_fft=256):
-    """Compute PSD comparison metrics for debugging"""
-    # CRITICAL FIX: Ensure proper n_fft sizing
-    seq_len = real_data.size(1)
-    n_fft = min(n_fft, seq_len)
+def train_wgan_gp(csv_path, output_path='timeseries_synthetic.csv',
+                                    epochs=200, batch_size=64, seq_len=128, noise_dim=64,
+                                    lr_g=2e-4, lr_c=8e-5, lambda_gp=10, n_critic=5):
     
-    real_psd = batch_log_psd(real_data, n_fft=n_fft).mean(dim=0)
-    fake_psd = batch_log_psd(fake_data, n_fft=n_fft).mean(dim=0)
-    mse_psd = F.mse_loss(fake_psd, real_psd).item()
-    return mse_psd, real_psd, fake_psd
-
-def train_fixed_wgan_gp(csv_path, output_path='FIXED_synthetic_timeseries.csv',
-                       epochs=200, batch_size=64, seq_len=128, noise_dim=64,
-                       lr_g=1e-4, lr_c=2e-4, lambda_gp=10, n_critic=5,
-                       # CRITICAL FIX: Loss balancing experiments
-                       lambda_adv=1.0, lambda_time=5.0, lambda_deriv=0.5, 
-                       lambda_mrstft=1.0, lambda_feat=1.0, lambda_stat=0.1, 
-                       lambda_psd=0.2, lambda_acorr=0.2):
-    """Train WGAN-GP with ALL critical fixes applied"""
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     # Load data
-    real_data, scaler = load_data_properly_fixed(csv_path, seq_len)
+    real_data, scaler = load_data_properly(csv_path, seq_len)
     dataset = TensorDataset(real_data)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-    print(f"Data loaded - sequences: {len(real_data)}, sequence length: {seq_len}")
 
-    # FIX 5: Initialize networks with smaller defaults
-    generator = FixedImprovedGenerator(
-        noise_dim=noise_dim,
-        seq_len=seq_len,
-        d_model=64,        # was 128
-        nhead=4,
-        num_layers=6       # was 12
+    # Initialize networks
+    generator = Generator(
+        noise_dim=noise_dim, seq_len=seq_len, d_model=64, nhead=4, num_layers=6
     ).to(device)
 
-    critic = FixedImprovedCritic(
-        seq_len=seq_len,
-        d_model=64,        # was 128
-        nhead=4,
-        num_layers=6       # was 14
+    critic = RobustCriticTimeFreq(
+        seq_len=seq_len, d_model=64, nhead=4, num_layers=4
     ).to(device)
 
-    feature_extractor = FastFeatureExtractor(seq_len).to(device)
-
-    print(f"Generator parameters: {sum(p.numel() for p in generator.parameters()):,}")
-    print(f"Critic parameters: {sum(p.numel() for p in critic.parameters()):,}")
-
-    # CRITICAL BUG FIX 1: Create full evaluation noise for dataset-length FID eval
-    dataset_len = len(dataloader.dataset)
-    torch.manual_seed(42)  # Deterministic eval noise for reproducibility
-    eval_noise_full = torch.randn(dataset_len, noise_dim, device=device)
-    eval_noise_psd = torch.randn(200, noise_dim, device=device)  # For PSD evaluation
-    print(f"✓ Full evaluation noise created: {eval_noise_full.shape}")
-
-    # Optimizers
-    optimizer_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.0, 0.9))
-    optimizer_c = optim.Adam(critic.parameters(), lr=lr_c, betas=(0.0, 0.9))
-
-    # Schedulers
-    scheduler_g = optim.lr_scheduler.StepLR(optimizer_g, step_size=epochs//4, gamma=0.5)
-    scheduler_c = optim.lr_scheduler.StepLR(optimizer_c, step_size=epochs//4, gamma=0.5)
-
-    # Training history - FIX 6: Track all losses
-    critic_losses = []
-    generator_losses = []
-    mrstft_losses = []
-    time_l1_losses = []
-    deriv_l1_losses = []
-    psd_losses = []
-    acorr_losses = []
-    feat_losses = []
-    stat_losses = []
-    dc_reg_losses = []
-    fid_scores = []
-    psd_metrics = []
+    # Patch critic for local patterns
+    patch_critic = PatchCritic(patch_len=32, d_model=32).to(device)
+    spec_discriminator = PatchSpecDiscriminator(n_fft=128).to(device)
     
-    best_fid_score = float('inf')
-    best_model_path = 'best_fixed_wgan_gp.pth'
+    critic.apply(init_weights_xavier)
+    patch_critic.apply(init_weights_xavier)
+    spec_discriminator.apply(init_weights_xavier)
 
-    print("Starting training with ALL CRITICAL BUG FIXES...")
-    print(f"Loss weights: adv={lambda_adv}, time={lambda_time}, deriv={lambda_deriv}, mrstft={lambda_mrstft}")
+    optimizer_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.5, 0.9))
+    optimizer_c = optim.Adam(critic.parameters(), lr=lr_c, betas=(0.5, 0.9))
+    optimizer_pc = optim.Adam(patch_critic.parameters(), lr=lr_c, betas=(0.5, 0.9))
+    optimizer_spec = optim.Adam(spec_discriminator.parameters(), lr=lr_c, betas=(0.5, 0.9))
+
+
+    training_history = {
+        'critic_losses': [], 'generator_losses': [], 'patch_critic_losses': [],
+        'spec_discriminator_losses': [], 'complex_spectral_losses': [],
+        'per_band_mse': []
+    }
     
     for epoch in range(epochs):
-        epoch_critic_loss = 0
-        epoch_generator_loss = 0
-        epoch_mrstft_loss = 0
-        epoch_time_l1_loss = 0
-        epoch_deriv_l1_loss = 0
-        epoch_psd_loss = 0
-        epoch_acorr_loss = 0
-        epoch_feat_loss = 0
-        epoch_stat_loss = 0
-        epoch_dc_reg = 0
+        epoch_losses = {
+            'critic': 0, 'generator': 0, 'patch_critic': 0,
+            'spec_discriminator': 0, 'complex_spectral': 0
+        }
         num_batches = 0
 
-        # Instance noise schedule (slightly increased initial value)
-        sigma = max(0.1 * (1 - epoch/(epochs * 1.2)), 0.001)
+        
+        sigma = max(0.005 * (1 - epoch/(epochs * 0.8)), 0.0)  
 
         for batch_idx, (real_samples,) in enumerate(dataloader):
             real_samples = real_samples.to(device)
             current_batch_size = real_samples.size(0)
 
-            # Train Critic
+            real_aug = apply_amplitude_augmentations(real_samples, aug_prob=0.2)
+            real_aug = apply_time_augmentations(real_aug, aug_prob=0.1)
+
+            real_norm, real_amp = normalize_per_sample(real_samples)
+            
             for _ in range(n_critic):
                 optimizer_c.zero_grad()
                 noise = torch.randn(current_batch_size, noise_dim).to(device)
                 fake_samples = generator(noise).detach()
+                fake_norm, fake_amp = normalize_per_sample(fake_samples)
 
-                # Add instance noise
-                real_noisy = add_instance_noise(real_samples, sigma)
-                fake_noisy = add_instance_noise(fake_samples, sigma)
+                if sigma > 0:
+                    real_input = real_norm + sigma * torch.randn_like(real_norm)
+                    fake_input = fake_norm + sigma * torch.randn_like(fake_norm)
+                else:
+                    real_input = real_norm
+                    fake_input = fake_norm
 
-                # Critic outputs
-                real_output = critic(real_noisy)
-                fake_output = critic(fake_noisy)
+                real_output = critic(real_input)
+                fake_output = critic(fake_input)
 
-                # Gradient penalty
-                gp = improved_gradient_penalty(critic, real_samples, fake_samples, device)
-
-                # Critic loss
+                gp = gradient_penalty(critic, real_norm, fake_norm, device, lambda_gp)
                 critic_loss = fake_output.mean() - real_output.mean() + lambda_gp * gp
                 critic_loss.backward()
                 torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
                 optimizer_c.step()
 
-                epoch_critic_loss += critic_loss.item()
+                epoch_losses['critic'] += critic_loss.item()
 
-            # FIX 6: Train Generator with ALL new losses
+            optimizer_pc.zero_grad()
+            real_patches = sample_patches(real_norm, patch_len=32, num_patches=4)
+            fake_patches = sample_patches(fake_norm, patch_len=32, num_patches=4)
+            
+            real_patch_output = patch_critic(real_patches)
+            fake_patch_output = patch_critic(fake_patches)
+            
+            patch_gp = gradient_penalty(patch_critic, real_patches, fake_patches, device, lambda_gp)
+            patch_critic_loss = fake_patch_output.mean() - real_patch_output.mean() + lambda_gp * patch_gp
+            patch_critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(patch_critic.parameters(), max_norm=1.0)
+            optimizer_pc.step()
+
+            epoch_losses['patch_critic'] += patch_critic_loss.item()
+
+
+            optimizer_spec.zero_grad()
+            real_spec_output = spec_discriminator(real_samples)
+            fake_spec_output = spec_discriminator(fake_samples.detach())
+            
+            spec_gp = gradient_penalty(spec_discriminator, real_samples, fake_samples, device, lambda_gp)
+            spec_discriminator_loss = fake_spec_output.mean() - real_spec_output.mean() + lambda_gp * spec_gp
+            spec_discriminator_loss.backward()
+            torch.nn.utils.clip_grad_norm_(spec_discriminator.parameters(), max_norm=1.0)
+            optimizer_spec.step()
+
+            epoch_losses['spec_discriminator'] += spec_discriminator_loss.item()
+
+
             optimizer_g.zero_grad()
             noise = torch.randn(current_batch_size, noise_dim).to(device)
             fake_samples = generator(noise)
-            fake_output = critic(fake_samples)
+            fake_norm, fake_amp = normalize_per_sample(fake_samples)
 
-            # Adversarial loss
+            fake_output, fake_features = critic(fake_norm, return_features=True)
             wasserstein_loss = -fake_output.mean()
+            
+            fake_patch_output = patch_critic(sample_patches(fake_norm, 32, 4))
+            patch_wasserstein_loss = -fake_patch_output.mean()
+            
+            fake_spec_output = spec_discriminator(fake_samples)
+            spec_wasserstein_loss = -fake_spec_output.mean()
 
-            # FIX 3: MR-STFT with improved scales and consistent sizing
-            mrstft_val = mrstft_loss(real_samples, fake_samples, n_ffts=(64,128,256))
 
-            # FIX 2: Time-domain L1 + derivative
-            time_l1 = time_domain_l1_loss(real_samples, fake_samples)
-            deriv_l1 = derivative_l1_loss(real_samples, fake_samples)
+            amp_loss = F.l1_loss(fake_amp, real_amp)
 
-            # FIX 2: PSD + autocorr with proper sizing
-            psd_l = psd_loss(real_samples, fake_samples, n_fft=min(512, seq_len), hop=max(32, seq_len//8))
-            acor_l = autocorr_loss(real_samples, fake_samples, max_lag=min(128, seq_len//2))
+            with torch.no_grad():
+                _, real_features = critic(real_norm, return_features=True)
+            fm_loss = F.l1_loss(fake_features, real_features.detach())
 
-            # Spectral feature matching
-            feat_real = extract_torch_spectral_features(real_samples, device=device)
-            feat_fake = extract_torch_spectral_features(fake_samples, device=device)
-            feat_loss = F.l1_loss(feat_fake, feat_real)
 
-            # Mean/std matching
-            mean_loss = F.l1_loss(fake_samples.mean(dim=[1,2]), real_samples.mean(dim=[1,2]))
-            std_loss = F.l1_loss(fake_samples.std(dim=[1,2]), real_samples.std(dim=[1,2]))
-            stat_loss = mean_loss + std_loss
+            spec_losses = complex_spectral_loss(
+                fake_samples.squeeze(-1), real_samples.squeeze(-1), 
+                n_fft=min(256, seq_len), power=0.3 
+            )
+ 
+            mrstft_val = mrstft_loss(real_samples, fake_samples, n_ffts=(64,128,256,512))
 
-            # DC reg
             dc_reg = generator.get_dc_regularization()
 
-            # FIX 6: Combined generator loss with ALL fixes
             generator_loss = (
-                lambda_adv * wasserstein_loss +
-                lambda_time * time_l1 +
-                lambda_deriv * deriv_l1 +
-                lambda_mrstft * mrstft_val +
-                lambda_feat * feat_loss +
-                lambda_stat * stat_loss +
-                lambda_psd * psd_l +
-                lambda_acorr * acor_l +
-                dc_reg
+                1.0 * wasserstein_loss +                # Main adversarial
+                0.5 * patch_wasserstein_loss +          # Patch adversarial  
+                0.8 * spec_wasserstein_loss +           # Spectrogram adversarial
+                1.0 * amp_loss +                        # Amplitude matching
+                6.0 * fm_loss +                         # UPWEIGHTED: Feature matching
+                5.0 * spec_losses['mag'] +              # CRITICAL: Compressed magnitude
+                4.0 * spec_losses['shape'] +            # CRITICAL: Shape matching
+                2.0 * spec_losses['complex'] +          # Complex (real+imag) matching
+                3.0 * spec_losses['inst_freq'] +        # Instantaneous frequency
+                5.0 * mrstft_val +                      # UPWEIGHTED: MR-STFT
+                dc_reg                                  # DC regularization
             )
 
             generator_loss.backward()
-            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=1.0) 
             optimizer_g.step()
 
-            # FIX 6: Track FULL generator loss and all components
-            epoch_generator_loss += generator_loss.item()
-            epoch_mrstft_loss += mrstft_val.item()
-            epoch_time_l1_loss += time_l1.item()
-            epoch_deriv_l1_loss += deriv_l1.item()
-            epoch_psd_loss += psd_l.item()
-            epoch_acorr_loss += acor_l.item()
-            epoch_feat_loss += feat_loss.item()
-            epoch_stat_loss += stat_loss.item()
-            epoch_dc_reg += dc_reg.item()
+            # Track losses
+            epoch_losses['generator'] += generator_loss.item()
+            complex_spectral_total = (spec_losses['mag'] + spec_losses['shape'] + 
+                                    spec_losses['complex'] + spec_losses['inst_freq']).item()
+            epoch_losses['complex_spectral'] += complex_spectral_total
             num_batches += 1
 
-        # Update learning rates
-        scheduler_g.step()
-        scheduler_c.step()
 
-        # Calculate averages with protection against divide-by-zero
-        avg_critic_loss = epoch_critic_loss / max(num_batches * n_critic, 1)
-        avg_generator_loss = epoch_generator_loss / max(num_batches, 1)
-        avg_mrstft_loss = epoch_mrstft_loss / max(num_batches, 1)
-        avg_time_l1_loss = epoch_time_l1_loss / max(num_batches, 1)
-        avg_deriv_l1_loss = epoch_deriv_l1_loss / max(num_batches, 1)
-        avg_psd_loss = epoch_psd_loss / max(num_batches, 1)
-        avg_acorr_loss = epoch_acorr_loss / max(num_batches, 1)
-        avg_feat_loss = epoch_feat_loss / max(num_batches, 1)
-        avg_stat_loss = epoch_stat_loss / max(num_batches, 1)
-        avg_dc_reg = epoch_dc_reg / max(num_batches, 1)
+        for key in epoch_losses:
+            if key == 'critic':
+                epoch_losses[key] /= max(num_batches * n_critic, 1)
+            else:
+                epoch_losses[key] /= max(num_batches, 1)
 
-        # Store losses
-        critic_losses.append(avg_critic_loss)
-        generator_losses.append(avg_generator_loss)
-        mrstft_losses.append(avg_mrstft_loss)
-        time_l1_losses.append(avg_time_l1_loss)
-        deriv_l1_losses.append(avg_deriv_l1_loss)
-        psd_losses.append(avg_psd_loss)
-        acorr_losses.append(avg_acorr_loss)
-        feat_losses.append(avg_feat_loss)
-        stat_losses.append(avg_stat_loss)
-        dc_reg_losses.append(avg_dc_reg)
 
-        # FIX 7: More frequent PSD evaluation with FIXED noise
+        for key, value in epoch_losses.items():
+            training_history[f'{key}_losses'].append(value)
+
         if epoch % 10 == 0 and epoch > 0:
             generator.eval()
             with torch.no_grad():
-                # Use fixed evaluation noise for PSD
-                fake_batch = generator(eval_noise_psd)
-                real_batch = real_data[:200].to(device)
+                test_noise = torch.randn(32, noise_dim, device=device)
+                test_fake = generator(test_noise)
+                test_real = real_data[:32].to(device)
                 
-                mse_psd, _, _ = compute_psd_metrics(real_batch, fake_batch)
-                psd_metrics.append(mse_psd)
+                band_mse = per_band_mse(test_real, test_fake, n_fft=min(256, seq_len))
+                training_history['per_band_mse'].append(band_mse)
                 
-                print(f"Epoch {epoch}: PSD MSE = {mse_psd:.4f} (FIXED NOISE)")
+                # Report worst 5 frequency bins
+                worst_bins = np.argsort(band_mse)[-5:]
+                print(f"Worst frequency bins: {worst_bins} (MSE: {band_mse[worst_bins]:.4f})")
             generator.train()
 
-        # CRITICAL BUG FIX 1: Evaluate FID with proper noise indexing
-        if epoch % 50 == 0 and epoch > 0:  # Changed from 100 to 50
-            print(f"Evaluating FID at epoch {epoch}...")
+        if epoch % 25 == 0 and epoch > 0:
             generator.eval()
-            feature_extractor.eval()
-            
-            real_features_list = []
-            fake_features_list = []
-            
             with torch.no_grad():
-                idx = 0  # Reset index counter for proper noise slicing
-                for batch_data, in dataloader:
-                    batch_data = batch_data.to(device)
-                    current_batch_size = batch_data.size(0)
-                    
-                    # Real features
-                    real_feat = feature_extractor(batch_data)
-                    real_features_list.append(real_feat)
-                    
-                    # CRITICAL BUG FIX 1: Use proper noise indexing to avoid repeats
-                    start_idx = idx
-                    end_idx = idx + current_batch_size
-                    noise_batch = eval_noise_full[start_idx:end_idx]
-                    idx += current_batch_size
-                    
-                    fake_data = generator(noise_batch)
-                    fake_feat = feature_extractor(fake_data)
-                    fake_features_list.append(fake_feat)
-
-                real_features = torch.cat(real_features_list, dim=0)
-                fake_features = torch.cat(fake_features_list, dim=0)
-
-                # Calculate FID
-                real_features_np = real_features.cpu().numpy()
-                fake_features_np = fake_features.cpu().numpy()
+                test_noise = torch.randn(8, noise_dim, device=device)
+                test_fake = generator(test_noise)
+                test_real = real_data[:8].to(device)
                 
-                mu1, sigma1 = real_features_np.mean(axis=0), np.cov(real_features_np, rowvar=False)
-                mu2, sigma2 = fake_features_np.mean(axis=0), np.cov(fake_features_np, rowvar=False)
-                
-                # Numerical stability
-                eps = 1e-6
-                sigma1 += eps * np.eye(sigma1.shape[0])
-                sigma2 += eps * np.eye(sigma2.shape[0])
-                
-                ssdiff = np.sum((mu1 - mu2) ** 2.0)
-                covmean = sqrtm(sigma1.dot(sigma2))
-                
-                if np.iscomplexobj(covmean):
-                    covmean = covmean.real
-                
-                fid_score = ssdiff + np.trace(sigma1 + sigma2 - 2.0 * covmean)
-                fid_scores.append(fid_score)
-
-                if fid_score < best_fid_score:
-                    best_fid_score = fid_score
-                    torch.save({
-                        'epoch': epoch,
-                        'generator_state_dict': generator.state_dict(),
-                        'critic_state_dict': critic.state_dict(),
-                        'fid_score': fid_score
-                    }, best_model_path)
-                    print(f"✓ New best model saved! FID: {fid_score:.4f} (NO REPEATS)")
-
+                analyze_batch_spectral(test_real, test_fake, 
+                    save_path=f'advanced_spectral_analysis_epoch_{epoch}.png')
             generator.train()
-            feature_extractor.train()
 
-        # FIX 7: Enhanced logging every 20 epochs
         if epoch % 20 == 0:
-            print(f"Epoch [{epoch}/{epochs}]")
-            print(f"  Critic: {avg_critic_loss:.4f} | Total Gen: {avg_generator_loss:.4f}")
-            print(f"  Time L1: {avg_time_l1_loss:.4f} | Deriv L1: {avg_deriv_l1_loss:.4f}")
-            print(f"  MR-STFT: {avg_mrstft_loss:.4f} | PSD: {avg_psd_loss:.4f}")
-            print(f"  Autocorr: {avg_acorr_loss:.4f} | DC Reg: {avg_dc_reg:.6f}")
-            print(f"  Noise σ: {sigma:.4f} | Time/STFT ratio: {avg_time_l1_loss/max(avg_mrstft_loss, 1e-8):.2f}")
-
-    # CRITICAL FIX: Conditional FID printing
-    if fid_scores:
-        print(f"Training completed! Best FID: {best_fid_score:.4f}")
-    else:
-        print("Training completed! No FID computed.")
-
-    # Load best model and generate final data
-    if os.path.exists(best_model_path):
-        checkpoint = torch.load(best_model_path, map_location=device)
-        generator.load_state_dict(checkpoint['generator_state_dict'])
-        print("Loaded best model for final generation")
-
-    # Generate synthetic data
+            print(f"\nEpoch [{epoch}/{epochs}] - ADVANCED SPECTRAL LEARNING")
+            print(f"  Main Critic: {epoch_losses['critic']:.4f}")
+            print(f"  Patch Critic: {epoch_losses['patch_critic']:.4f}") 
+            print(f"  Spec Discriminator: {epoch_losses['spec_discriminator']:.4f}")
+            print(f"  Generator: {epoch_losses['generator']:.4f}")
+            print(f"  Complex Spectral: {epoch_losses['complex_spectral']:.4f}")
+            print(f"  Instance noise σ: {sigma:.5f}")
+    
     generator.eval()
     with torch.no_grad():
         num_samples = len(real_data)
@@ -752,219 +767,34 @@ def train_fixed_wgan_gp(csv_path, output_path='FIXED_synthetic_timeseries.csv',
 
         synthetic_data = torch.cat(all_synthetic, dim=0)
 
-    # Save synthetic data
+
+    print("FINAL ADVANCED SPECTRAL ANALYSIS:")
+    analyze_batch_spectral(real_data[:5].to(device), synthetic_data[:5], 
+                          save_path='final_advanced_spectral_analysis.png')
+
+    # Save data
     synthetic_flat = synthetic_data.cpu().numpy().reshape(-1, 1)
     denormalized = scaler.inverse_transform(synthetic_flat)
-    df = pd.DataFrame(denormalized, columns=['fixed_synthetic_timeseries'])
+    df = pd.DataFrame(denormalized, columns=['start'])
     df.to_csv(output_path, index=False)
-    print(f"Fixed synthetic data saved to {output_path}")
+    print(f"synthetic data saved to {output_path}")
 
-    # Create comprehensive analysis plots
-    plt.figure(figsize=(20, 16))
+    return generator, critic, patch_critic, spec_discriminator, training_history
 
-    # Loss plots with all new losses
-    plt.subplot(4, 4, 1)
-    plt.plot(critic_losses, label='Critic Loss', alpha=0.7)
-    plt.title('Critic Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(4, 4, 2)
-    plt.plot(generator_losses, label='Total Generator Loss', alpha=0.7, color='red')
-    plt.title('Total Generator Loss (BUG-FIXED)')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(4, 4, 3)
-    plt.plot(time_l1_losses, label='Time-domain L1', alpha=0.7, color='blue')
-    plt.title(f'Time-Domain L1 Loss (λ={lambda_time})')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(4, 4, 4)
-    plt.plot(deriv_l1_losses, label='Derivative L1', alpha=0.7, color='green')
-    plt.title(f'Derivative L1 Loss (λ={lambda_deriv})')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(4, 4, 5)
-    plt.plot(mrstft_losses, label='MR-STFT Loss', alpha=0.7, color='orange')
-    plt.title(f'Multi-Resolution STFT Loss (λ={lambda_mrstft})')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(4, 4, 6)
-    plt.plot(psd_losses, label='PSD Loss', alpha=0.7, color='purple')
-    plt.title(f'PSD Loss (λ={lambda_psd}) - hop≥1 fixed')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(4, 4, 7)
-    plt.plot(acorr_losses, label='Autocorr Loss', alpha=0.7, color='brown')
-    plt.title(f'Autocorrelation Loss (λ={lambda_acorr})')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(4, 4, 8)
-    plt.plot(dc_reg_losses, label='DC Regularization', alpha=0.7, color='pink')
-    plt.title('DC Bias Regularization')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    # PSD metrics evolution with FIXED noise
-    plt.subplot(4, 4, 9)
-    if len(psd_metrics) > 0:
-        psd_epochs = list(range(10, 10 * len(psd_metrics) + 1, 10))
-        plt.plot(psd_epochs, psd_metrics, 'go-', alpha=0.7)
-        plt.title('PSD MSE Evolution (FIXED NOISE)')
-        plt.xlabel('Epoch')
-        plt.ylabel('PSD MSE')
-        plt.grid(True)
-
-    # FID scores with proper noise indexing
-    plt.subplot(4, 4, 10)
-    if len(fid_scores) > 0:
-        fid_epochs = list(range(50, 50 * len(fid_scores) + 1, 50))
-        plt.plot(fid_epochs, fid_scores, 'bo-', alpha=0.7)
-        if best_fid_score != float('inf'):
-            plt.axhline(y=best_fid_score, color='red', linestyle='--',
-                       label=f'Best: {best_fid_score:.4f}')
-        plt.title('FID Score (NO REPEATS)')
-        plt.xlabel('Epoch')
-        plt.ylabel('FID Score')
-        plt.legend()
-        plt.grid(True)
-
-    # Time series comparison
-    plt.subplot(4, 4, 11)
-    real_sample = real_data[0].squeeze().cpu().numpy()
-    synthetic_sample = synthetic_data[0].squeeze().cpu().numpy()
-    plt.plot(real_sample, label='Real', alpha=0.8, linewidth=2)
-    plt.plot(synthetic_sample, label='Synthetic (BUG-FIXED)', alpha=0.8, linewidth=2)
-    plt.title('Sample Time Series Comparison')
-    plt.xlabel('Time Steps')
-    plt.ylabel('Value')
-    plt.legend()
-    plt.grid(True)
-
-    # FFT comparison
-    plt.subplot(4, 4, 12)
-    real_fft = np.abs(np.fft.fft(real_sample))[:len(real_sample)//2]
-    synthetic_fft = np.abs(np.fft.fft(synthetic_sample))[:len(synthetic_sample)//2]
-    freqs = np.fft.fftfreq(len(real_sample))[:len(real_sample)//2]
-    plt.semilogy(freqs, real_fft, label='Real FFT', alpha=0.8)
-    plt.semilogy(freqs, synthetic_fft, label='Synthetic FFT (FIXED)', alpha=0.8)
-    plt.title('Frequency Spectrum Comparison')
-    plt.xlabel('Normalized Frequency')
-    plt.ylabel('Magnitude')
-    plt.legend()
-    plt.grid(True)
-
-    # Statistical comparison
-    plt.subplot(4, 4, 13)
-    real_stats = [real_data.mean().item(), real_data.std().item()]
-    synthetic_stats = [synthetic_data.mean().item(), synthetic_data.std().item()]
-    x = ['Mean', 'Std']
-    width = 0.35
-    plt.bar([i - width/2 for i in range(len(x))], real_stats, width, label='Real', alpha=0.7)
-    plt.bar([i + width/2 for i in range(len(x))], synthetic_stats, width, label='Synthetic', alpha=0.7)
-    plt.title('Statistical Comparison (No Tanh)')
-    plt.ylabel('Value')
-    plt.xticks(range(len(x)), x)
-    plt.legend()
-    plt.grid(True)
-
-    # DC bias final value
-    plt.subplot(4, 4, 14)
-    dc_value = generator.dc_bias.item()
-    plt.bar(['DC Bias'], [dc_value], color='red', alpha=0.7)
-    plt.title(f'Final DC Bias: {dc_value:.6f}')
-    plt.ylabel('Value')
-    plt.grid(True)
-
-    # Loss component balance analysis
-    plt.subplot(4, 4, 15)
-    plt.plot(feat_losses, label='Feature Loss', alpha=0.7)
-    plt.plot(stat_losses, label='Stat Loss', alpha=0.7)
-    plt.title('Additional Losses')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
-
-    # Loss ratios (to see balance)
-    plt.subplot(4, 4, 16)
-    if len(time_l1_losses) > 10:  # Only if we have enough data
-        time_ratio = np.array(time_l1_losses) / np.array(mrstft_losses)
-        plt.plot(time_ratio, label='Time-L1 / MR-STFT', alpha=0.7)
-        plt.axhline(y=lambda_time/lambda_mrstft, color='red', linestyle='--', 
-                   label=f'Target: {lambda_time/lambda_mrstft:.1f}')
-        plt.title('Loss Component Balance')
-        plt.xlabel('Epoch')
-        plt.ylabel('Ratio')
-        plt.legend()
-        plt.grid(True)
-
-    plt.tight_layout()
-    plt.savefig('WGAN-GP/synthetic_data/analysis_v0.2.png', dpi=300, bbox_inches='tight')
-    plt.show()
-
-    return (generator, critic, {
-        'critic_losses': critic_losses,
-        'generator_losses': generator_losses,
-        'mrstft_losses': mrstft_losses,
-        'time_l1_losses': time_l1_losses,
-        'deriv_l1_losses': deriv_l1_losses,
-        'psd_losses': psd_losses,
-        'acorr_losses': acorr_losses,
-        'feat_losses': feat_losses,
-        'stat_losses': stat_losses,
-        'dc_reg_losses': dc_reg_losses,
-        'fid_scores': fid_scores,
-        'psd_metrics': psd_metrics,
-        'best_fid_score': best_fid_score
-    })
-
-# Example usage with ALL CRITICAL BUG FIXES
 if __name__ == "__main__":
     csv_file = 'data.csv'
     
-    # Run main training with recommended settings
-    results = train_fixed_wgan_gp(
+    results = train_wgan_gp(
         csv_path=csv_file,
-        output_path='WGAN-GP/synthetic_data/data_model-v0.2.csv',
+        output_path='synthetic_timeseries.csv',
         epochs=200,
         batch_size=64,
         seq_len=128,
         noise_dim=64,
-        lr_g=1e-4,      # Generator learning rate
-        lr_c=2e-4,      # Critic learning rate
+        lr_g=2e-4,      
+        lr_c=8e-5,  
         lambda_gp=10,
-        n_critic=5,
-        # Recommended balanced settings
-        lambda_adv=1.0,
-        lambda_time=5.0,      # Reduced to prevent dominance
-        lambda_deriv=0.5,
-        lambda_mrstft=1.0,
-        lambda_feat=1.0,
-        lambda_stat=0.1,
-        lambda_psd=0.2,
-        lambda_acorr=0.2
+        n_critic=5
     )
     
+

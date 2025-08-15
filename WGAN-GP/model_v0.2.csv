@@ -1,0 +1,11 @@
+Component,Shape,Data Type,Processing,Key Parameters
+Input Data,"(N, 1)",Raw time series,CSV loading,"MinMax(-1,1)"
+Preprocessed Data,"(B, 128, 1)",Overlapping sequences,Sliding window (stride=64),"seq_len=128, 50% overlap"
+Normalized Data,"(B, 128, 1)",Per-sample normalized,"μ=0, σ=1 per sample","Store (μ,σ) stats"
+Generator Input,"(B, 64)",Random noise,Gaussian noise,noise_dim=64
+Generator Output,"(B, 128, 1)",Synthetic sequences,Transformer + Conv,"d_model=64, 6 layers"
+Critic Input (Time),"(B, 128, 1)",Real/fake sequences,Time-domain processing,Conv→Transformer→Pool
+Critic Input (Freq),"(B, F, T)",STFT magnitude,Frequency analysis,"n_fft∈{64,128,256,512}"
+Patch Input,"(B×4, 32, 1)",Random patches,Random patch sampling,"patch_len=32, n_patches=4"
+Loss Computation,Scalar values,Loss components,Weighted combination,9 loss components
+Final Output,"(N_gen, 1)",Denormalized output,Inverse scaling,Original scale restored

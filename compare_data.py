@@ -7,7 +7,7 @@ from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
 real = pd.read_csv("data.csv", header=None)[0].values
-synthetic = pd.read_csv("FIXED_synthetic_timeseries.csv")
+synthetic = pd.read_csv("WGAN-GP/synthetic_data/data_model-v0.2.csv")
 real = real[:48000]
 synthetic = synthetic[:48000]  
 
@@ -155,13 +155,19 @@ def interpolate_to_match(a, b):
 
 def pearson_corr(arr1, arr2):
     a, b = interpolate_to_match(arr1, arr2)
+    a = np.ravel(a)
+    b = np.ravel(b)
     return np.corrcoef(a, b)[0, 1]
 
 def cosine_sim(arr1, arr2):
     a, b = interpolate_to_match(arr1, arr2)
+    a = np.ravel(a)
+    b = np.ravel(b)
     return 1 - cosine(a, b)
 
 def kl_divergence(arr1, arr2, bins=100):
+    arr1= np.ravel(arr1)
+    arr2 = np.ravel(arr2)
     p_hist, _ = np.histogram(arr1, bins=bins, density=True)
     q_hist, _ = np.histogram(arr2, bins=bins, density=True)
     p_hist += 1e-10
@@ -169,12 +175,13 @@ def kl_divergence(arr1, arr2, bins=100):
     return entropy(p_hist, q_hist)
 
 def mmd(arr1, arr2, gamma=1.0, window_size=10000):
+    
     a, b = interpolate_to_match(arr1, arr2)
     min_len = min(len(a), len(b))
     
     a = a[:min_len]
     b = b[:min_len]
-
+    a, b = np.ravel(arr1), np.ravel(arr2)
     num_windows = min_len // window_size
     mmd_values = []
 
