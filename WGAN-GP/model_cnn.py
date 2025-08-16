@@ -37,25 +37,25 @@ class Generator(nn.Module):
         
         self.low_freq_branch = nn.Sequential(
             nn.ConvTranspose1d(256, 128, kernel_size=32, stride=4, padding=14),
-            nn.GELU(True),
+            nn.ReLU(True),
             nn.ConvTranspose1d(128, 64, kernel_size=16, stride=4, padding=6),
             nn.ReLU(True),
         )
         
         self.high_freq_branch = nn.Sequential(
             nn.ConvTranspose1d(256, 128, kernel_size=8, stride=2, padding=3),
-            nn.GELU(True),
+            nn.ReLU(True),
             nn.ConvTranspose1d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.GELU(True),
+            nn.ReLU(True),
         )
         
         self.combiner = nn.Sequential(
             nn.Conv1d(128, 64, kernel_size=3, padding=1),
-            nn.GELU(True),
+            nn.ReLU(True),
             nn.Conv1d(64, 32, kernel_size=3, padding=1),
-            nn.GELU(True),
+            nn.ReLU(True),
             nn.Conv1d(32, 1, kernel_size=1),
-            # nn.Tanh()
+            nn.Tanh()
         )
 
     def forward(self, z):
@@ -111,15 +111,15 @@ class Generator(nn.Module):
 #             nn.Tanh()
 #         )
 
-    def forward(self, z):
-        x = self.initial(z)
-        x = x.view(x.size(0), 512, self.start_size)
-        x = self.net(x)
+    # def forward(self, z):
+    #     x = self.initial(z)
+    #     x = x.view(x.size(0), 512, self.start_size)
+    #     x = self.net(x)
         
-        if x.size(2) != self.output_length:
-            x = torch.nn.functional.interpolate(x, size=self.output_length, mode='linear', align_corners=False)
+    #     if x.size(2) != self.output_length:
+    #         x = torch.nn.functional.interpolate(x, size=self.output_length, mode='linear', align_corners=False)
         
-        return x
+    #     return x
 
 class Critic(nn.Module):
     def __init__(self, input_length=1824):
@@ -295,7 +295,7 @@ def train_wgan_gp(csv_file, num_epochs=50, batch_size=64, lr=1e-4, lambda_gp=10,
         total_count = generated_samples.numel()
         print(f"Non-zero values: {non_zero_count}/{total_count} ({100*non_zero_count/total_count:.1f}%)")
     
-    save_generated_to_csv(generated_samples, 'generated_timeseries.csv',dataset.min_val, dataset.max_val)
+    save_generated_to_csv(generated_samples, 'WGAN-GP/data_model_cnn.csv',dataset.min_val, dataset.max_val)
     plot_critic_losses(critic_losses)
     plot_critic_losses(generator_losses)
     return generator, critic, critic_losses, generator_losses
@@ -306,13 +306,13 @@ if __name__ == "__main__":
     
     generator, critic, critic_losses, gen_losses = train_wgan_gp(
         csv_file=csv_file,
-        num_epochs=20,
-        batch_size=512,
+        num_epochs=30,
+        batch_size=256,
         lr=1e-4,
         lambda_gp=10,
         lambda_g=1.0,
         n_critic=2,
-        latent_dim=100
+        latent_dim=256
     )
     
     print("Training completed!")
