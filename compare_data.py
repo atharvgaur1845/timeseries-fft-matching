@@ -6,14 +6,14 @@ from scipy.stats import skew, kurtosis, entropy, wasserstein_distance
 from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
-real = pd.read_csv("data.csv", header=None)[0].values
-synthetic = pd.read_csv("WGAN-GP/synthetic_data/data_model-v0.2.csv")
-real = real[:48000]
-synthetic = synthetic[:48000]  
+real = pd.read_csv("CWRU_data/N.csv", header=None)[0].values
+synthetic = pd.read_csv("generated_timeseries.csv")
+# real = real[:1824]
+# synthetic = synthetic[:1824]  
 
 plt.figure(figsize=(16, 9))
-plt.plot(real[:1000], label='Real', alpha=0.7)
-plt.plot(synthetic[:1000], label='Synthetic Local LLM', alpha=0.5)
+plt.plot(real[:2000], label='Real', alpha=0.7)
+plt.plot(synthetic[:2000], label='Synthetic Local LLM', alpha=0.5)
 plt.title("Time-Domain Comparison")
 plt.xlabel("Sample Index")
 plt.ylabel("Amplitude")
@@ -22,7 +22,7 @@ plt.grid(True)
 plt.show()
 
 #fft
-fs = 25600
+fs = 12000
 N = len(real)
 
 # Compute FFTs
