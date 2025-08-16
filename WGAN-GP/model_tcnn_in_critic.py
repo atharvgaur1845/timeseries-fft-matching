@@ -78,97 +78,59 @@ class Generator(nn.Module):
         x = self.combiner(combined)
         return x
 
-# class GeneratorAdaptive(nn.Module):
-#     def __init__(self, latent_dim=100, output_length=1824):
-#         super(GeneratorAdaptive, self).__init__()
-#         self.latent_dim = latent_dim
-#         self.output_length = output_length
+class TCNBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, dilation):
+        super(TCNBlock, self).__init__()
+        padding = (kernel_size - 1) * dilation
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, 
+                              padding=padding, dilation=dilation)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, 
+                              padding=padding, dilation=dilation)
+        self.dropout = nn.Dropout(0.2)
+        self.relu = nn.ReLU()
         
-#         self.start_size = output_length // (4 * 4 * 4)
-#         if self.start_size < 1:
-#             self.start_size = 1
+        self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
         
-#         self.initial = nn.Linear(latent_dim, 512* self.start_size)
+    def forward(self, x):
+        residual = x
+        out = self.relu(self.conv1(x))
+        out = self.dropout(out)
+        out = self.conv2(out)
+        out = self.dropout(out)
+    
+        if out.size(2) != residual.size(2):
+            min_size = min(out.size(2), residual.size(2))
+            out = out[:, :, :min_size]
+            residual = residual[:, :, :min_size]
         
-#         self.net = nn.Sequential(
-#             nn.ConvTranspose1d(512, 512, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(True),
-#             nn.ConvTranspose1d(512, 256, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(True),
-#             nn.ConvTranspose1d(256, 256, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(True),
-#             nn.ConvTranspose1d(256, 256, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(True),
-#             nn.ConvTranspose1d(256, 128, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(True),
-#             nn.ConvTranspose1d(128, 128, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(True),
-#             nn.ConvTranspose1d(128, 64, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(True),
-#             nn.ConvTranspose1d(64, 32, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(True),
-#             nn.Conv1d(32, 1, kernel_size=7, padding=3),
-#             nn.Tanh()
-#         )
+        if self.downsample:
+            residual = self.downsample(residual)
+            
+        return self.relu(out + residual)
 
-    # def forward(self, z):
-    #     x = self.initial(z)
-    #     x = x.view(x.size(0), 512, self.start_size)
-    #     x = self.net(x)
-        
-    #     if x.size(2) != self.output_length:
-    #         x = torch.nn.functional.interpolate(x, size=self.output_length, mode='linear', align_corners=False)
-        
-    #     return x
 
-class Critic(nn.Module):
+class TCNCritic(nn.Module):
     def __init__(self, input_length=1824):
-        super(Critic, self).__init__()
+        super(TCNCritic, self).__init__()
         
-        self.multi_scale_convs = nn.ModuleList([
-            #high frequency
-            nn.Sequential(
-                nn.Conv1d(1, 64, kernel_size=8, stride=2, padding=3),
-                nn.LeakyReLU(0.2),
-                nn.Conv1d(64, 128, kernel_size=8, stride=2, padding=3),
-                nn.LeakyReLU(0.2),
-            ),
-            nn.Sequential(
-                nn.Conv1d(1, 64, kernel_size=16, stride=4, padding=6),
-                nn.LeakyReLU(0.2),
-                nn.Conv1d(64, 128, kernel_size=16, stride=4, padding=6),
-                nn.LeakyReLU(0.2),
-            ),
-            #low frequency
-            nn.Sequential(
-                nn.Conv1d(1, 64, kernel_size=32, stride=8, padding=12),
-                nn.LeakyReLU(0.2),
-                nn.Conv1d(64, 128, kernel_size=32, stride=8, padding=12),
-                nn.LeakyReLU(0.2),
-            )
-        ])
+        self.tcn_layers = nn.Sequential(
+            TCNBlock(1, 64, kernel_size=8, dilation=1),    
+            TCNBlock(64, 128, kernel_size=8, dilation=2),     
+            TCNBlock(128, 256, kernel_size=8, dilation=4),   
+            TCNBlock(256, 512, kernel_size=8, dilation=8),
+            TCNBlock(512, 512, kernel_size=8, dilation=16),
+        )
         
-        self.feature_combiner = nn.Sequential(
-            nn.Conv1d(384, 256, kernel_size=3, padding=1), 
-            nn.LeakyReLU(0.2),
-            nn.Conv1d(256, 512, kernel_size=3, padding=1),
-            nn.LeakyReLU(0.2),
+        self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
             nn.Linear(512, 1)
         )
 
     def forward(self, x):
-        multi_scale_features = []
-        
-        for conv_block in self.multi_scale_convs:
-            feature = conv_block(x)
-            feature = F.adaptive_avg_pool1d(feature, 100)
-            multi_scale_features.append(feature)
-        
-        combined = torch.cat(multi_scale_features, dim=1)
-        x = self.feature_combiner(combined)
-        return x
+        x = self.tcn_layers(x)
+        return self.classifier(x)
+
     
 def gradient_penalty(critic, real, fake, device, lambda_gp=10):
     batch_size = real.size(0)
@@ -236,7 +198,7 @@ def train_wgan_gp(csv_file, num_epochs=50, batch_size=64, lr=1e-4, lambda_gp=10,
     #     generator = Generator(latent_dim=latent_dim).to(device)
     #     print("Using fixed generator")
     generator = Generator(latent_dim=latent_dim).to(device)
-    critic = Critic().to(device)
+    critic = TCNCritic().to(device)
     
     optimizer_g = optim.Adam(generator.parameters(), lr=lr, betas=(0.9, 0.99))
     optimizer_c = optim.Adam(critic.parameters(), lr=lr, betas=(0.9, 0.99))
@@ -295,7 +257,7 @@ def train_wgan_gp(csv_file, num_epochs=50, batch_size=64, lr=1e-4, lambda_gp=10,
         total_count = generated_samples.numel()
         print(f"Non-zero values: {non_zero_count}/{total_count} ({100*non_zero_count/total_count:.1f}%)")
     
-    save_generated_to_csv(generated_samples, 'WGAN-GP/data_model_cnn.csv',dataset.min_val, dataset.max_val)
+    save_generated_to_csv(generated_samples, 'WGAN-GP/data_model_tcnn_in_crtic.csv',dataset.min_val, dataset.max_val)
     plot_critic_losses(critic_losses)
     plot_critic_losses(generator_losses)
     return generator, critic, critic_losses, generator_losses
@@ -305,12 +267,12 @@ if __name__ == "__main__":
     generator, critic, critic_losses, gen_losses = train_wgan_gp(
         csv_file=csv_file,
         num_epochs=30,
-        batch_size=256,
+        batch_size=64,
         lr=1e-4,
         lambda_gp=10,
         lambda_g=1.0,
         n_critic=2,
-        latent_dim=256
+        latent_dim=128
     )
     
     print("Training completed!")

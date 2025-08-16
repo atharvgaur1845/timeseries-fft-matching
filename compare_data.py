@@ -7,9 +7,9 @@ from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
 real = pd.read_csv("CWRU_data/N.csv", header=None)[0].values
-synthetic = pd.read_csv("generated_timeseries.csv")
-# real = real[:1824]
-# synthetic = synthetic[:1824]  
+synthetic = pd.read_csv("WGAN-GP/data_model_tcnn_in_crtic.csv")
+real = real[:1824]
+synthetic = synthetic[:1824]  
 
 plt.figure(figsize=(16, 9))
 plt.plot(real[:2000], label='Real', alpha=0.7)
