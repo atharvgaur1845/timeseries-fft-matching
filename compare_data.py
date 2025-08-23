@@ -7,7 +7,12 @@ from scipy.spatial.distance import cosine
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.interpolate import interp1d
 real = pd.read_csv("CWRU_data/N.csv", header=None)[0].values
-synthetic = pd.read_csv("WGAN-GP/data_model_tcnn_in_crtic.csv")
+
+synthetic = pd.read_csv(
+    "WGAN-GP/synthetic_data_tcn_in_crtic/synthetic_class_3_sample_228.csv", 
+    header=None
+)[0].values[:1824]
+
 real = real[:1824]
 synthetic = synthetic[:1824]  
 
@@ -21,30 +26,50 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
-#fft
+    #fft
 fs = 12000
 N = len(real)
 
-# Compute FFTs
+    # Compute FFTs
 def compute_fft(signal, fs):
     fft_vals = np.fft.fft(signal)
     fft_freqs = np.fft.fftfreq(len(signal), d=1/fs)
     pos_mask = fft_freqs > 0
     return fft_freqs[pos_mask], (np.abs(fft_vals) * 2 / len(signal))[pos_mask]
+    # def compute_fft(signal, fs):
+    #     fft_vals = np.fft.fft(signal)
+    #     freqs = np.fft.fftfreq(len(fft_vals), d=1/fs)  # Sampling frequency
+    #     pos_idx = freqs > 0
+    #     return np.abs(fft_vals[pos_idx]), freqs[pos_idx]
 
-real_freqs, real_fft = compute_fft(real, fs)
+real_freqs, real_fft = compute_fft(real,fs)
 synth_freqs, synth_fft = compute_fft(synthetic, fs)
 
-# Plot
+    # Plot
+# plt.figure(figsize=(16, 9))
+# plt.plot(real_freqs, real_fft, label="Real FFT", alpha=0.7)
+# plt.plot(synth_freqs, synth_fft, label="Synthetic FFT Local LLM", alpha=0.7)
+# plt.title("FFT Magnitude Spectrum Comparison")
+# plt.xlabel("Frequency (Hz)")
+# plt.ylabel("Magnitude")
+# plt.legend()
+# plt.grid(True)
+# plt.show()
+# Limit to 1000 Hz
+mask_real = real_freqs <= 1000
+mask_synth = synth_freqs <= 1000
+
 plt.figure(figsize=(16, 9))
-plt.plot(real_freqs, real_fft, label="Real FFT", alpha=0.7)
-plt.plot(synth_freqs, synth_fft, label="Synthetic FFT Local LLM", alpha=0.7)
-plt.title("FFT Magnitude Spectrum Comparison")
+plt.plot(real_freqs[mask_real], real_fft[mask_real], label="Real FFT", alpha=0.7)
+plt.plot(synth_freqs[mask_synth], synth_fft[mask_synth], label="Synthetic FFT Local LLM", alpha=0.7)
+plt.title("FFT Magnitude Spectrum Comparison (0–1000 Hz)")
 plt.xlabel("Frequency (Hz)")
 plt.ylabel("Magnitude")
 plt.legend()
 plt.grid(True)
 plt.show()
+
+
 # def compute_time_domain_features(signal):
 #     mean_val = np.mean(signal)
 #     std_dev = np.std(signal)
@@ -123,20 +148,20 @@ plt.show()
 # real_freq_stats, _, _ = compute_frequency_domain_features(real, fs)
 # synth_freq_stats, _, _ = compute_frequency_domain_features(synthetic, fs)
 # print_comparison_stats(real_freq_stats, synth_freq_stats, domain="Frequency")
-def plot_kde(real, synthetic, labels=('Real', 'Synthetic'), title='KDE Plot of Signals'):
-    plt.figure(figsize=(10, 5))
+# def plot_kde(real, synthetic, labels=('Real', 'Synthetic'), title='KDE Plot of Signals'):
+#     plt.figure(figsize=(10, 5))
     
-    sns.kdeplot(real, label=labels[0], fill=True, color='blue', linewidth=2, alpha=0.6)
-    sns.kdeplot(synthetic, label=labels[1], fill=True, color='orange', linewidth=2, alpha=0.6)
+#     sns.kdeplot(real, label=labels[0], fill=True, color='blue', linewidth=2, alpha=0.6)
+#     sns.kdeplot(synthetic, label=labels[1], fill=True, color='orange', linewidth=2, alpha=0.6)
     
-    plt.title(title)
-    plt.xlabel("Value")
-    plt.ylabel("Density")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-plot_kde(real, synthetic)
+#     plt.title(title)
+#     plt.xlabel("Value")
+#     plt.ylabel("Density")
+#     plt.legend()
+#     plt.grid(True)
+#     plt.tight_layout()
+#     plt.show()
+# plot_kde(real, synthetic)
 
 def interpolate_to_match(a, b):
     len_a, len_b = len(a), len(b)

@@ -6,273 +6,281 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
-class TimeSeriesDataset(Dataset):
-    def __init__(self, csv_file, window_size=1824, stride=36):
+class CWRUDataset(Dataset):
+    def __init__(self, csv_file, label, max_samples=None, window_size=1824, stride=36):
         data = pd.read_csv(csv_file)
         signal = data.iloc[:, 0].values.astype(np.float32)
-        self.min_val = np.min(signal)
-        self.max_val = np.max(signal)
-        signal = 2 * (signal - self.min_val) / (self.max_val - self.min_val) - 1
-        
+        self.label = label
         self.sequences = []
+        self.scalers = []
+        
         for start in range(0, len(signal) - window_size + 1, stride):
-            self.sequences.append(signal[start:start+window_size])
-        self.sequences = np.array(self.sequences)
+            if max_samples is not None and len(self.sequences) >= max_samples:
+                break
+            window = signal[start:start + window_size]
+            min_val = np.min(window)
+            max_val = np.max(window)
 
+            if max_val - min_val < 1e-7:
+                normalized = np.zeros_like(window)
+            else:
+                normalized = 2 * (window - min_val) / (max_val - min_val) - 1
+                
+            self.sequences.append(normalized)
+            self.scalers.append((min_val, max_val))
+        
+        self.sequences = np.array(self.sequences)
+    
     def __len__(self):
         return len(self.sequences)
-
+    
     def __getitem__(self, idx):
-        return torch.tensor(self.sequences[idx]).unsqueeze(0)
+        return (torch.tensor(self.sequences[idx]).unsqueeze(0),
+                torch.tensor(self.label, dtype=torch.long),
+                self.scalers[idx])
+class GeneratorCNN(nn.Module):
+    def __init__(self, nz=100, num_classes=4, embed_size=10):
+        super().__init__()
 
-class Generator(nn.Module):
-    def __init__(self, latent_dim=100, output_length=1824):
-        super(Generator, self).__init__()
-        self.latent_dim = latent_dim
-        self.output_length = output_length
-        
-
-        self.initial = nn.Linear(latent_dim, 512 * 16)
-        
-        self.low_freq_branch = nn.Sequential(
-            nn.ConvTranspose1d(256, 128, kernel_size=32, stride=4, padding=14),
+        self.label_emb = nn.Embedding(num_classes, embed_size)
+        self.main = nn.Sequential(
+            nn.ConvTranspose1d(nz + embed_size, 512, 114, 1, 0, bias=False),
+            nn.BatchNorm1d(512),
             nn.ReLU(True),
-            nn.ConvTranspose1d(128, 64, kernel_size=16, stride=4, padding=6),
+            nn.ConvTranspose1d(512, 256, 4, 2, 1, bias=False),
+            nn.BatchNorm1d(256),
             nn.ReLU(True),
-        )
-        
-        self.high_freq_branch = nn.Sequential(
-            nn.ConvTranspose1d(256, 128, kernel_size=8, stride=2, padding=3),
+            nn.ConvTranspose1d(256, 128, 4, 2, 1, bias=False),
+            nn.BatchNorm1d(128),
             nn.ReLU(True),
-            nn.ConvTranspose1d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose1d(128, 64, 4, 2, 1, bias=False),
+            nn.BatchNorm1d(64),
             nn.ReLU(True),
-        )
-        
-        self.combiner = nn.Sequential(
-            nn.Conv1d(128, 64, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.Conv1d(64, 32, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.Conv1d(32, 1, kernel_size=1),
+            nn.ConvTranspose1d(64, 1, 4, 2, 1, bias=False),
             nn.Tanh()
         )
-
-    def forward(self, z):
-        x_1 = self.initial(z)
-        x_1 = x_1.view(x_1.size(0), 512, 16)
         
-        low_freq_input = x_1[:, :256, :]
-        high_freq_input = x_1[:, 256:, :]
-        
-        low_freq = self.low_freq_branch(low_freq_input)
-        high_freq = self.high_freq_branch(high_freq_input)
-        
-        target_len = min(low_freq.size(2), high_freq.size(2))
-        low_freq = F.interpolate(low_freq, size=target_len, mode='linear', align_corners=False)
-        high_freq = F.interpolate(high_freq, size=target_len, mode='linear', align_corners=False)
-        
-        combined = torch.cat([low_freq, high_freq], dim=1)
-        combined = F.interpolate(combined, size=self.output_length, mode='linear', align_corners=False)
-        
-        x = self.combiner(combined)
+    def forward(self, z, labels):
+        label_embedding = self.label_emb(labels)  
+        gen_input = torch.cat((z, label_embedding), dim=1)  
+        gen_input = gen_input.unsqueeze(2) 
+        x = self.main(gen_input)
         return x
-
 class TCNBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dilation):
-        super(TCNBlock, self).__init__()
-        padding = (kernel_size - 1) * dilation
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, 
-                              padding=padding, dilation=dilation)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, 
-                              padding=padding, dilation=dilation)
-        self.dropout = nn.Dropout(0.2)
+    def __init__(self, in_channels, out_channels, kernel_size=5, dilation=1, dropout=0.05):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding="same", dilation=dilation)
+        self.norm1 = nn.LayerNorm(out_channels)
         self.relu = nn.ReLU()
-        
-        self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
-        
-    def forward(self, x):
-        residual = x
-        out = self.relu(self.conv1(x))
-        out = self.dropout(out)
-        out = self.conv2(out)
-        out = self.dropout(out)
+        self.dropout = nn.Dropout(dropout)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding="same", dilation=dilation)
+        self.norm2 = nn.LayerNorm(out_channels)
+        self.residual = nn.Conv1d(in_channels, out_channels, kernel_size=1) if in_channels != out_channels else nn.Identity()
     
-        if out.size(2) != residual.size(2):
-            min_size = min(out.size(2), residual.size(2))
-            out = out[:, :, :min_size]
-            residual = residual[:, :, :min_size]
-        
-        if self.downsample:
-            residual = self.downsample(residual)
-            
-        return self.relu(out + residual)
-
-
-class TCNCritic(nn.Module):
-    def __init__(self, input_length=1824):
-        super(TCNCritic, self).__init__()
-        
-        self.tcn_layers = nn.Sequential(
-            TCNBlock(1, 64, kernel_size=8, dilation=1),    
-            TCNBlock(64, 128, kernel_size=8, dilation=2),     
-            TCNBlock(128, 256, kernel_size=8, dilation=4),   
-            TCNBlock(256, 512, kernel_size=8, dilation=8),
-            TCNBlock(512, 512, kernel_size=8, dilation=16),
-        )
-        
-        self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1),
-            nn.Flatten(),
-            nn.Linear(512, 1)
-        )
+    def forward(self, x):
+        res = self.residual(x)
+        x = self.conv1(x)
+        x = self.norm1(x.transpose(1,2)).transpose(1,2)
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.conv2(x)
+        x = self.norm2(x.transpose(1,2)).transpose(1,2)
+        x = self.relu(x)
+        x = self.dropout(x)
+        return x + res
+class DiscriminatorTCN(nn.Module):
+    def __init__(self, num_classes=4, num_blocks=9, channels=64, kernel_size=5, dropout=0.05):
+        super().__init__()
+        self.initial_conv = nn.Conv1d(1, channels, kernel_size=1)
+        self.tcn_layers = nn.Sequential(*[TCNBlock(channels, channels, kernel_size, dilation=2**i, dropout=dropout) for i in range(num_blocks)])
+        self.flatten = nn.AdaptiveAvgPool1d(1)
+        self.adv_output = nn.Linear(channels, 1)  
+        self.classifier = nn.Linear(channels, num_classes)  
 
     def forward(self, x):
+        x = self.initial_conv(x)
         x = self.tcn_layers(x)
-        return self.classifier(x)
+        x = self.flatten(x).squeeze(2)  
+        validity = self.adv_output(x)  
+        label_pred = self.classifier(x)  
+        return validity, label_pred
 
+def gradient_penalty(discriminator, real_data, fake_data, labels, device, lambda_gp=10):
+    batch_size = real_data.size(0)
+    epsilon = torch.rand(batch_size, 1, 1, device=device)
     
-def gradient_penalty(critic, real, fake, device, lambda_gp=10):
-    batch_size = real.size(0)
-    epsilon = torch.rand(batch_size, 1, 1, device=device, requires_grad=True)
-    interpolated = epsilon * real + (1 - epsilon) * fake
+    min_length = min(real_data.size(2), fake_data.size(2))
+    real_cropped = real_data[:, :, :min_length]
+    fake_cropped = fake_data[:, :, :min_length]
+    
+    interpolated = epsilon * real_cropped + (1 - epsilon) * fake_cropped
     interpolated.requires_grad_(True)
-    prob_interpolated = critic(interpolated)
+    
+    critic_output, _ = discriminator(interpolated)
 
     gradients = torch.autograd.grad(
-        outputs=prob_interpolated,
+        outputs=critic_output,
         inputs=interpolated,
-        grad_outputs=torch.ones_like(prob_interpolated),
+        grad_outputs=torch.ones_like(critic_output),
         create_graph=True,
         retain_graph=True,
         only_inputs=True
     )[0]
-
+    
     gradients = gradients.view(batch_size, -1)
     gradient_norm = gradients.norm(2, dim=1)
     penalty = ((gradient_norm - 1) ** 2).mean() * lambda_gp
+    
     return penalty
 
-def generator_loss(critic_output, classification_loss=0, lambda_g=1.0):
-    return -torch.mean(critic_output) + lambda_g * classification_loss
+def generator_loss(discriminator, fake_data, fake_labels, lambda_cls=1.0):
+    critic_output, class_output = discriminator(fake_data)
+    
+    wasserstein_loss = -critic_output.mean()
+    
+    classification_loss = F.cross_entropy(class_output, fake_labels)
+    
+    return wasserstein_loss + lambda_cls * classification_loss
 
-def critic_loss(critic, real_data, fake_data, device, lambda_gp=10):
-    real_loss = -torch.mean(critic(real_data))
-    fake_loss = torch.mean(critic(fake_data))
-    gp = gradient_penalty(critic, real_data, fake_data, device, lambda_gp)
-    return real_loss + fake_loss + gp
+def discriminator_loss(discriminator, real_data, fake_data, real_labels, fake_labels, device, lambda_gp=10, lambda_cls=1.0):
+    real_critic, real_class = discriminator(real_data)
+    fake_critic, fake_class = discriminator(fake_data.detach())
+    
+    wasserstein_loss = fake_critic.mean() - real_critic.mean()
+    gp = gradient_penalty(discriminator, real_data, fake_data, real_labels, device, lambda_gp)
+    classification_loss = F.cross_entropy(real_class, real_labels)
+    
+    return wasserstein_loss + gp + lambda_cls * classification_loss
+
+def train(num_epochs=50, batch_size=64, lr=1e-4, lambda_gp=10, lambda_cls=1.0):
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Training on device: {device}")
+    datasets = CWRUDataset('CWRU_data/N.csv', label=0, max_samples=4800)  
+
+    dataloader = DataLoader(datasets, batch_size=batch_size, shuffle=True, drop_last=True)
+
+    
+    print(f"Total training samples: {len(datasets)}")
+    
+    generator = GeneratorCNN(nz=100, num_classes=4, embed_size=10).to(device)
+    discriminator = DiscriminatorTCN(num_classes=4, num_blocks=9, channels=64).to(device)
+
+    optimizer_g = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.9))
+    optimizer_d = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.9))
+    
+    g_losses = []
+    d_losses = []
+    
+    print("training...")
+    
+    for epoch in range(num_epochs):
+        epoch_g_loss = 0
+        epoch_d_loss = 0
+        num_batches = 0
+        
+        for real_data, real_labels, scalers in dataloader:
+            real_data = real_data.to(device)
+            real_labels = real_labels.to(device)
+            current_batch_size = real_data.size(0)
+            
+            for _ in range(5):
+                noise = torch.randn(current_batch_size, 100, device=device)
+                #fake_labels = torch.randint(0, 4, (current_batch_size,), device=device)
+                fake_labels = torch.zeros(current_batch_size, dtype=torch.long, device=device)
+                fake_data = generator(noise, fake_labels)
+                
+                d_loss = discriminator_loss(discriminator, real_data, fake_data,
+                                          real_labels, fake_labels, device, lambda_gp, lambda_cls)
+                
+                optimizer_d.zero_grad()
+                d_loss.backward()
+                optimizer_d.step()
+                
+                epoch_d_loss += d_loss.item()
+            
+            noise = torch.randn(current_batch_size, 100, device=device)
+            fake_labels = torch.randint(0, 4, (current_batch_size,), device=device)
+            fake_data = generator(noise, fake_labels)
+            
+            g_loss = generator_loss(discriminator, fake_data, fake_labels, lambda_cls)
+            
+            optimizer_g.zero_grad()
+            g_loss.backward()
+            optimizer_g.step()
+            
+            epoch_g_loss += g_loss.item()
+            num_batches += 1
+        
+        g_losses.append(epoch_g_loss / num_batches)
+        d_losses.append(epoch_d_loss / (num_batches * 5))
+        
+        print(f"Epoch [{epoch+1}/{num_epochs}] - G_Loss: {g_losses[-1]:.4f}, D_Loss: {d_losses[-1]:.4f}")
+        
+        if (epoch + 1) % 10 == 0:
+            with torch.no_grad():
+                test_noise = torch.randn(1, 100, device=device)
+                test_labels = torch.tensor([0], device=device)  
+                test_output = generator(test_noise, test_labels)
+                print(f"  Generated shape: {test_output.shape}, Std: {test_output.std().item():.4f}")
+    
+    return generator, discriminator, g_losses, d_losses
+
 def denormalize_data(normalized_data, min_val, max_val):
     return (normalized_data + 1) * (max_val - min_val) / 2 + min_val
 
-def save_generated_to_csv(generated_tensor, filename, min_val, max_val):
-    arr = generated_tensor.detach().cpu().numpy().reshape(-1)
-    arr = denormalize_data(arr, min_val, max_val)
-    df = pd.DataFrame(arr, columns=["generated"])
-    df.to_csv(filename, index=False)
-    print(f"Generated synthetic data saved to {filename}")
-def plot_critic_losses(critic_losses):
-    plt.figure(figsize=(12, 6))
-    plt.plot(critic_losses, label='Critic Loss', color='blue', linewidth=1.5)
-    plt.xlabel('Training Step')
-    plt.ylabel('Critic Loss')
-    plt.title('WGAN-GP Critic Loss During Training')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+def save_synthetic_samples(generator, num_samples, scalers, output_dir):
 
-def train_wgan_gp(csv_file, num_epochs=50, batch_size=64, lr=1e-4, lambda_gp=10, 
-                  lambda_g=1.0, n_critic=5, latent_dim=100):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Training on device: {device}")
+    os.makedirs(output_dir, exist_ok=True)
+    device = next(generator.parameters()).device
     
-    dataset = TimeSeriesDataset(csv_file)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    print(f"Dataset loaded: {len(dataset)} samples")
-    
-    # Choose generator type
-    # if use_adaptive:
-    #     generator = GeneratorAdaptive(latent_dim=latent_dim).to(device)
-    #     print("Using adaptive generator")
-    # else:
-    #     generator = Generator(latent_dim=latent_dim).to(device)
-    #     print("Using fixed generator")
-    generator = Generator(latent_dim=latent_dim).to(device)
-    critic = TCNCritic().to(device)
-    
-    optimizer_g = optim.Adam(generator.parameters(), lr=lr, betas=(0.9, 0.99))
-    optimizer_c = optim.Adam(critic.parameters(), lr=lr, betas=(0.9, 0.99))
-    
-    critic_losses = []
-    generator_losses = []
-    
-    for epoch in range(num_epochs):
-        epoch_critic_losses = []
-        epoch_gen_losses = []
-        
-        for i, real_samples in enumerate(dataloader):
-            real_samples = real_samples.to(device)
-            current_batch_size = real_samples.size(0)
-            
-            for _ in range(n_critic):
-                z = torch.randn(current_batch_size, latent_dim).to(device)
-                fake_samples = generator(z).detach()
-                
-                loss_c = critic_loss(critic, real_samples, fake_samples, device, lambda_gp)
-                
-                optimizer_c.zero_grad()
-                loss_c.backward()
-                optimizer_c.step()
-                
-                epoch_critic_losses.append(loss_c.item())
-            
-            z = torch.randn(current_batch_size, latent_dim).to(device)
-            fake_samples = generator(z)
-            critic_output = critic(fake_samples)
-            
-            loss_g = generator_loss(critic_output, classification_loss=0, lambda_g=lambda_g)
-            
-            optimizer_g.zero_grad()
-            loss_g.backward()
-            optimizer_g.step()
-            
-            epoch_gen_losses.append(loss_g.item())
-        
-        critic_losses.extend(epoch_critic_losses)
-        generator_losses.extend(epoch_gen_losses)
-        
-        avg_critic_loss = np.mean(epoch_critic_losses)
-        avg_gen_loss = np.mean(epoch_gen_losses)
-        print(f"Epoch [{epoch+1}/{num_epochs}] - Critic Loss: {avg_critic_loss:.4f}, Generator Loss: {avg_gen_loss:.4f}")
-    print("\nGenerating synthetic time series...")
     generator.eval()
     with torch.no_grad():
-        num_samples = 100
-        z = torch.randn(num_samples, latent_dim).to(device)
-        generated_samples = generator(z)
-        print(f"Generated samples shape: {generated_samples.shape}")
-       
-        
-        non_zero_count = (generated_samples != 0).sum().item()
-        total_count = generated_samples.numel()
-        print(f"Non-zero values: {non_zero_count}/{total_count} ({100*non_zero_count/total_count:.1f}%)")
+        for class_label in range(1):  
+            for i in range(num_samples // 1):
+                noise = torch.randn(1, 100, device=device)
+                label = torch.tensor([class_label], device=device)
+                
+                fake_sample = generator(noise, label)
+                sample_data = fake_sample.squeeze().cpu().numpy()
+                
+                scaler = scalers[i % len(scalers)]
+                denormalized = denormalize_data(sample_data, scaler[0], scaler[1])
+                
+                df = pd.DataFrame(denormalized, columns=[None])
+                df.to_csv(f"{output_dir}/synthetic_class_{class_label}_sample_{i}.csv", index=False)
     
-    save_generated_to_csv(generated_samples, 'WGAN-GP/data_model_tcnn_in_crtic.csv',dataset.min_val, dataset.max_val)
-    plot_critic_losses(critic_losses)
-    plot_critic_losses(generator_losses)
-    return generator, critic, critic_losses, generator_losses
+    print(f"Saved {num_samples} synthetic samples to {output_dir}/")
 if __name__ == "__main__":
-    csv_file = 'CWRU_data/N.csv'
     
-    generator, critic, critic_losses, gen_losses = train_wgan_gp(
-        csv_file=csv_file,
-        num_epochs=30,
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    generator, discriminator, g_losses, d_losses = train(
+        num_epochs=50,
         batch_size=64,
         lr=1e-4,
         lambda_gp=10,
-        lambda_g=1.0,
-        n_critic=2,
-        latent_dim=128
+        lambda_cls=1.0
     )
     
-    print("Training completed!")
+    torch.save(generator.state_dict(), 'generator.pth')
+    torch.save(discriminator.state_dict(), 'discriminator.pth')
+    
+    datasets = CWRUDataset('CWRU_data/N.csv', label=0, max_samples=4800),
+        
+    all_scalers = []
+    for dataset in datasets:
+        all_scalers.extend(dataset.scalers)
+    
+    save_synthetic_samples(
+        generator=generator,
+        num_samples=10,  
+        scalers=all_scalers,
+        output_dir="synthetic_data_tcn_in_critic"
+    )
+    
+    
+    print("Training completed successfully!")
