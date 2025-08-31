@@ -1,169 +1,15 @@
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy.stats import skew, kurtosis, entropy, wasserstein_distance
+from scipy.stats import entropy, pearsonr, ttest_ind
 from scipy.spatial.distance import cosine
-from sklearn.metrics.pairwise import rbf_kernel
+from sklearn.metrics.pairwise import rbf_kernel, cosine_similarity
 from scipy.interpolate import interp1d
-real = pd.read_csv("CWRU_data/N.csv", header=None)[0].values
-
-synthetic = pd.read_csv(
-    "WGAN-GP/synthetic_data_tcn_in_crtic/synthetic_class_3_sample_228.csv", 
-    header=None
-)[0].values[:1824]
-
-real = real[:1824]
-synthetic = synthetic[:1824]  
-
-plt.figure(figsize=(16, 9))
-plt.plot(real[:2000], label='Real', alpha=0.7)
-plt.plot(synthetic[:2000], label='Synthetic Local LLM', alpha=0.5)
-plt.title("Time-Domain Comparison")
-plt.xlabel("Sample Index")
-plt.ylabel("Amplitude")
-plt.legend()
-plt.grid(True)
-plt.show()
-
-    #fft
-fs = 12000
-N = len(real)
-
-    # Compute FFTs
-def compute_fft(signal, fs):
-    fft_vals = np.fft.fft(signal)
-    fft_freqs = np.fft.fftfreq(len(signal), d=1/fs)
-    pos_mask = fft_freqs > 0
-    return fft_freqs[pos_mask], (np.abs(fft_vals) * 2 / len(signal))[pos_mask]
-    # def compute_fft(signal, fs):
-    #     fft_vals = np.fft.fft(signal)
-    #     freqs = np.fft.fftfreq(len(fft_vals), d=1/fs)  # Sampling frequency
-    #     pos_idx = freqs > 0
-    #     return np.abs(fft_vals[pos_idx]), freqs[pos_idx]
-
-real_freqs, real_fft = compute_fft(real,fs)
-synth_freqs, synth_fft = compute_fft(synthetic, fs)
-
-    # Plot
-# plt.figure(figsize=(16, 9))
-# plt.plot(real_freqs, real_fft, label="Real FFT", alpha=0.7)
-# plt.plot(synth_freqs, synth_fft, label="Synthetic FFT Local LLM", alpha=0.7)
-# plt.title("FFT Magnitude Spectrum Comparison")
-# plt.xlabel("Frequency (Hz)")
-# plt.ylabel("Magnitude")
-# plt.legend()
-# plt.grid(True)
-# plt.show()
-# Limit to 1000 Hz
-mask_real = real_freqs <= 1000
-mask_synth = synth_freqs <= 1000
-
-plt.figure(figsize=(16, 9))
-plt.plot(real_freqs[mask_real], real_fft[mask_real], label="Real FFT", alpha=0.7)
-plt.plot(synth_freqs[mask_synth], synth_fft[mask_synth], label="Synthetic FFT Local LLM", alpha=0.7)
-plt.title("FFT Magnitude Spectrum Comparison (0–1000 Hz)")
-plt.xlabel("Frequency (Hz)")
-plt.ylabel("Magnitude")
-plt.legend()
-plt.grid(True)
-plt.show()
-
-
-# def compute_time_domain_features(signal):
-#     mean_val = np.mean(signal)
-#     std_dev = np.std(signal)
-#     rms = np.sqrt(np.mean(np.square(signal)))
-#     abs_mean = np.mean(np.abs(signal))
-#     peak_val = np.max(np.abs(signal))
-#     skew_val = skew(signal)
-#     kurt_val = kurtosis(signal)
-#     var_val = np.var(signal)
-    
-#     kurt_index = kurt_val / (rms**4 + 1e-8)
-#     peak_index = peak_val / (rms + 1e-8)
-#     waveform_index = rms / (abs_mean + 1e-8)
-#     pulse_index = peak_val / (abs_mean + 1e-8)
-
-#     return {
-#         'mean_value': mean_val,
-#         'standard_deviation': std_dev,
-#         'square_root_amplitude': rms,
-#         'absolute_mean_value': abs_mean,
-#         'peak_value': peak_val,
-#         'skewness': skew_val,
-#         'kurtosis': kurt_val,
-#         'variance': var_val,
-#         'kurtosis_index': kurt_index,
-#         'peak_index': peak_index,
-#         'waveform_index': waveform_index,
-#         'pulse_index': pulse_index
-#     }
-# def compute_frequency_domain_features(signal, fs):
-#     fft_vals = np.fft.fft(signal)
-#     fft_mag = np.abs(fft_vals)
-#     fft_freqs = np.fft.fftfreq(len(signal), d=1/fs)
-    
-#     pos_mask = fft_freqs > 0
-#     freqs = fft_freqs[pos_mask]
-#     spectrum = fft_mag[pos_mask]
-#     norm_spec = spectrum / (np.sum(spectrum) + 1e-8)
-
-#     centroid = np.sum(freqs * norm_spec)
-#     spread = np.sqrt(np.sum((freqs - centroid) ** 2 * norm_spec))
-#     rolloff = freqs[np.where(np.cumsum(norm_spec) >= 0.85)[0][0]]
-#     energy = np.sum(spectrum ** 2)
-#     peak = np.max(spectrum)
-#     flatness = np.exp(np.mean(np.log(spectrum + 1e-8))) / (np.mean(spectrum) + 1e-8)
-
-#     return {
-#         'frequency_mean_value': np.mean(spectrum),
-#         'frequency_variance': np.var(spectrum),
-#         'frequency_skewness': skew(spectrum),
-#         'frequency_kurtosis': kurtosis(spectrum),
-#         'frequency_standard_deviation': np.std(spectrum),
-#         'frequency_root_mean_square': np.sqrt(np.mean(spectrum ** 2)),
-#         'average_frequency': centroid,
-#         'gravity_frequency': centroid,  # synonym
-#         'regularity_degree': spread,
-#         'variation_parameter': spread / (centroid + 1e-8),
-#         'eighth_order_moment': np.mean(spectrum ** 8),
-#         'sixteenth_order_moment': np.mean(spectrum ** 16),
-#         'entropy': entropy(norm_spec),
-#         'spectral_rolloff_85': rolloff,
-#         'spectral_energy': energy,
-#         'spectral_peak': peak,
-#         'spectral_flatness': flatness
-#     }, freqs, spectrum
-# def print_comparison_stats(real_dict, synth_dict, domain="Time"):
-#     print(f"\n===== {domain} Domain Feature Comparison =====")
-#     for key in real_dict:
-#         real_val = real_dict[key]
-#         synth_val = synth_dict[key]
-#         diff = abs(real_val - synth_val)
-#         print(f"{key:30s} | Real: {real_val:>10.5f} | Synthetic: {synth_val:>10.5f} | Δ: {diff:>10.5f}")
-# real_time_stats = compute_time_domain_features(real)
-# synth_time_stats = compute_time_domain_features(synthetic)
-# print_comparison_stats(real_time_stats, synth_time_stats, domain="Time")
-# real_freq_stats, _, _ = compute_frequency_domain_features(real, fs)
-# synth_freq_stats, _, _ = compute_frequency_domain_features(synthetic, fs)
-# print_comparison_stats(real_freq_stats, synth_freq_stats, domain="Frequency")
-# def plot_kde(real, synthetic, labels=('Real', 'Synthetic'), title='KDE Plot of Signals'):
-#     plt.figure(figsize=(10, 5))
-    
-#     sns.kdeplot(real, label=labels[0], fill=True, color='blue', linewidth=2, alpha=0.6)
-#     sns.kdeplot(synthetic, label=labels[1], fill=True, color='orange', linewidth=2, alpha=0.6)
-    
-#     plt.title(title)
-#     plt.xlabel("Value")
-#     plt.ylabel("Density")
-#     plt.legend()
-#     plt.grid(True)
-#     plt.tight_layout()
-#     plt.show()
-# plot_kde(real, synthetic)
+from tqdm import tqdm
 
 def interpolate_to_match(a, b):
+    """Interpolate arrays to match lengths"""
     len_a, len_b = len(a), len(b)
     if len_a == len_b:
         return a, b
@@ -178,71 +24,350 @@ def interpolate_to_match(a, b):
         b_interp = interp1d(x_old, b, kind='linear')(x_new)
         return a, b_interp
 
-def pearson_corr(arr1, arr2):
-    a, b = interpolate_to_match(arr1, arr2)
-    a = np.ravel(a)
-    b = np.ravel(b)
-    return np.corrcoef(a, b)[0, 1]
+def normalize_signal(signal):
+    """Apply same normalization as model.py"""
+    signal = np.array(signal, dtype=np.float32)
+    min_val, max_val = signal.min(), signal.max()
+    return 2 * (signal - min_val) / (max_val - min_val + 1e-8) - 1
 
-def cosine_sim(arr1, arr2):
-    a, b = interpolate_to_match(arr1, arr2)
-    a = np.ravel(a)
-    b = np.ravel(b)
-    return 1 - cosine(a, b)
+def compute_fft(signal, fs=12000):
+    """Compute FFT of signal - same as model.py - FIXED ORDER"""
+    fft_vals = np.fft.fft(signal)
+    freqs = np.fft.fftfreq(len(fft_vals), d=1/fs)
+    pos_idx = freqs > 0
+    return freqs[pos_idx], np.abs(fft_vals[pos_idx])  # Return (frequency, magnitude)
 
-def kl_divergence(arr1, arr2, bins=100):
-    arr1= np.ravel(arr1)
-    arr2 = np.ravel(arr2)
-    p_hist, _ = np.histogram(arr1, bins=bins, density=True)
-    q_hist, _ = np.histogram(arr2, bins=bins, density=True)
-    p_hist += 1e-10
-    q_hist += 1e-10
-    return entropy(p_hist, q_hist)
+def compute_mmd(x, y, sigma=1.0):
+    """Compute MMD - same as model.py"""
+    import torch
+    x, y = torch.tensor(x).unsqueeze(1), torch.tensor(y).unsqueeze(1)
+    kernel = lambda a, b: torch.exp(-((a - b.T) ** 2) / (2 * sigma ** 2))
+    return kernel(x, x).mean() + kernel(y, y).mean() - 2 * kernel(x, y).mean()
 
-def mmd(arr1, arr2, gamma=1.0, window_size=10000):
+def compute_metrics_fft(original, generated):
+    """Compute all metrics on FFT domain - same as model.py"""
+    pearson_corr, _ = pearsonr(original, generated)
+    cosine_sim = cosine_similarity(original.reshape(1, -1), generated.reshape(1, -1))[0][0]
+    kl_div = entropy(original / original.sum(), generated / generated.sum())
+    mmd_val = compute_mmd(original, generated).item()
+    t_stat, p_value = ttest_ind(original, generated)
+    return pearson_corr, cosine_sim, kl_div, mmd_val, t_stat, p_value
+
+def evaluate_class_metrics_multicolumn(real_base_dir, synthetic_base_dir, class_names, max_length=1824, fs=12000):
+    """Evaluate metrics for all classes with 100-column synthetic files using FFT domain comparison"""
+    real_file_mapping = {
+        'N': 'N.csv',
+        '14BA': '14BA.csv', '14IR': '14IR.csv', '14OR': '14OR.csv',
+        '7BA': '7BA.csv', '7IR': '7IR.csv', '7OR': '7OR.csv',
+        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv'
+    }
     
-    a, b = interpolate_to_match(arr1, arr2)
-    min_len = min(len(a), len(b))
+    best_results = {}
     
-    a = a[:min_len]
-    b = b[:min_len]
-    a, b = np.ravel(arr1), np.ravel(arr2)
-    num_windows = min_len // window_size
-    mmd_values = []
+    for class_name in class_names:
+        print(f"Processing class: {class_name}")
+        
+        # Load real data
+        real_file = real_file_mapping.get(class_name)
+        real_path = os.path.join(real_base_dir, real_file)
+        if not os.path.exists(real_path):
+            print(f"  Real file not found: {real_path}")
+            continue
+            
+        real_data = pd.read_csv(real_path, header=None)
+        real_signal = real_data.iloc[:, 0].values[:max_length]
+        
+        # Apply same normalization as model.py
+        real_signal = normalize_signal(real_signal)
+        
+        # Compute FFT of real signal - now returns (frequency, magnitude)
+        real_freq, real_mag = compute_fft(real_signal, fs)
+        
+        # Load synthetic data file (assuming single CSV file with 100 columns)
+        synthetic_file_name = f"{class_name}.csv"
+        synthetic_path = os.path.join(synthetic_base_dir, synthetic_file_name)
+        
+        if not os.path.exists(synthetic_path):
+            print(f"  Synthetic file not found: {synthetic_path}")
+            continue
+        
+        try:
+            # Load synthetic data (100 columns)
+            synthetic_data = pd.read_csv(synthetic_path, header=None)
+            print(f"  Loaded synthetic data shape: {synthetic_data.shape}")
+            
+            # Initialize best metrics for this class
+            best_metrics = {
+                'pearson': {'value': -np.inf, 'column': None, 'data': None},
+                'cosine': {'value': -np.inf, 'column': None, 'data': None},
+                'kl_div': {'value': np.inf, 'column': None, 'data': None},
+                'mmd': {'value': np.inf, 'column': None, 'data': None}
+            }
+            
+            # Process all columns for this class
+            for col_idx in tqdm(range(synthetic_data.shape[1]), desc=f"  Processing {class_name} columns", leave=False):
+                synthetic_col = synthetic_data.iloc[:max_length, col_idx].values
+                
+                if len(synthetic_col) == 0:
+                    continue
+                
+                # Apply same normalization as model.py
+                synthetic_col = normalize_signal(synthetic_col)
+                
+                # Compute FFT of synthetic signal - now returns (frequency, magnitude)
+                synthetic_freq, synthetic_mag = compute_fft(synthetic_col, fs)
+                
+                # Calculate all metrics on FFT domain (same as model.py)
+                try:
+                    pearson_val, cosine_val, kl_val, mmd_val, _, p_val = compute_metrics_fft(real_mag, synthetic_mag)
+                    
+                    # Update best values
+                    if not np.isnan(pearson_val) and pearson_val > best_metrics['pearson']['value']:
+                        best_metrics['pearson']['value'] = pearson_val
+                        best_metrics['pearson']['column'] = col_idx
+                        best_metrics['pearson']['data'] = synthetic_col.copy()
+                    
+                    if not np.isnan(cosine_val) and cosine_val > best_metrics['cosine']['value']:
+                        best_metrics['cosine']['value'] = cosine_val
+                        best_metrics['cosine']['column'] = col_idx
+                        best_metrics['cosine']['data'] = synthetic_col.copy()
+                    
+                    if not np.isnan(kl_val) and kl_val < best_metrics['kl_div']['value']:
+                        best_metrics['kl_div']['value'] = kl_val
+                        best_metrics['kl_div']['column'] = col_idx
+                        best_metrics['kl_div']['data'] = synthetic_col.copy()
+                    
+                    if not np.isnan(mmd_val) and mmd_val < best_metrics['mmd']['value']:
+                        best_metrics['mmd']['value'] = mmd_val
+                        best_metrics['mmd']['column'] = col_idx
+                        best_metrics['mmd']['data'] = synthetic_col.copy()
+                        
+                except Exception as e:
+                    continue
+                    
+        except Exception as e:
+            print(f"    Error processing {class_name}: {str(e)}")
+            continue
+        
+        best_results[class_name] = best_metrics
+    
+    return best_results
 
-    for i in range(num_windows):
-        start = i * window_size
-        end = start + window_size
+def plot_fft_subplots_multicolumn(real_base_dir, best_results, class_names,
+                                  max_length=1824, fs=12000, max_freq=1500):
+    """Plot FFT comparison for each class in separate subplots using best columns"""
+    
+    real_file_mapping = {
+        'N': 'N.csv',
+        '14BA': '14BA.csv', '14IR': '14IR.csv', '14OR': '14OR.csv',
+        '7BA': '7BA.csv', '7IR': '7IR.csv', '7OR': '7OR.csv',
+        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv'
+    }
+    
+    # Create subplots: 5 rows x 2 columns for 10 classes
+    fig, axs = plt.subplots(nrows=5, ncols=2, figsize=(20, 20))
+    axs = axs.flatten()
+    
+    for i, class_name in enumerate(class_names):
+        ax = axs[i]
+        
+        if class_name not in best_results:
+            ax.set_title(f'{class_name} (No Data)', fontsize=12)
+            continue
+            
+        # Load real data
+        real_file = real_file_mapping.get(class_name)
+        real_path = os.path.join(real_base_dir, real_file)
+        
+        if not os.path.exists(real_path):
+            ax.set_title(f'{class_name} (No Real Data)', fontsize=12)
+            continue
+            
+        try:
+            real_data = pd.read_csv(real_path, header=None)
+            real = normalize_signal(real_data.iloc[:, 0].values[:max_length])
+            
+            # Get best synthetic data (using best Pearson column)
+            best_synthetic = best_results[class_name]['pearson']['data']
+            if best_synthetic is None:
+                ax.set_title(f'{class_name} (No Synthetic Data)', fontsize=12)
+                continue
+            
+            # Compute FFTs - now correctly returns (frequency, magnitude)
+            real_freqs, real_fft = compute_fft(real, fs)
+            synth_freqs, synth_fft = compute_fft(best_synthetic, fs)
+            
+            # Apply frequency mask
+            real_mask = real_freqs <= max_freq
+            synth_mask = synth_freqs <= max_freq
+            
+            # Plot on individual subplot
+            ax.plot(real_freqs[real_mask], real_fft[real_mask], 
+                   label=f'{class_name} Real', linewidth=1.5, alpha=0.8, color='blue')
+            ax.plot(synth_freqs[synth_mask], synth_fft[synth_mask], 
+                   label=f'{class_name} Synthetic', linewidth=1.5, 
+                   linestyle='--', alpha=0.8, color='red')
+            
+            # Formatting for each subplot
+            ax.set_title(f'{class_name}', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Frequency (Hz)', fontsize=10)
+            ax.set_ylabel('Magnitude', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=9)
+            
+            # Add metrics as text
+            pcc_value = best_results[class_name]['pearson']['value']
+            col_idx = best_results[class_name]['pearson']['column']
+            ax.text(0.02, 0.98, f'PCC: {pcc_value:.4f}\nCol: {col_idx}', 
+                   transform=ax.transAxes, fontsize=9, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            
+        except Exception as e:
+            print(f"Error plotting FFT for {class_name}: {str(e)}")
+            ax.set_title(f'{class_name} (Error)', fontsize=12)
+            continue
+    
+    # Overall figure formatting
+    fig.suptitle(f'FFT Magnitude Spectrum Comparison - Best Pearson Columns (0-{max_freq} Hz)', 
+                fontsize=18, fontweight='bold')
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.95)
+    plt.savefig('fft_comparison_best_columns.png', dpi=300, bbox_inches='tight')
+    plt.show()
 
-        window_a = a[start:end].reshape(-1, 1)
-        window_b = b[start:end].reshape(-1, 1)
+def plot_combined_timeseries(real_base_dir, best_results, class_names, max_length=1824):
+    """Plot time series comparison for all classes in separate subplots"""
+    
+    real_file_mapping = {
+        'N': 'N.csv',
+        '14BA': '14BA.csv', '14IR': '14IR.csv', '14OR': '14OR.csv',
+        '7BA': '7BA.csv', '7IR': '7IR.csv', '7OR': '7OR.csv',
+        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv'
+    }
+    
+    # Create subplots: 5 rows x 2 columns for 10 classes
+    fig, axs = plt.subplots(nrows=5, ncols=2, figsize=(20, 25))
+    axs = axs.flatten()
+    
+    time_axis = np.arange(max_length)
+    
+    for i, class_name in enumerate(class_names):
+        ax = axs[i]
+        
+        if class_name not in best_results:
+            ax.set_title(f'{class_name} (No Data)', fontsize=12)
+            continue
+            
+        # Load real data
+        real_file = real_file_mapping.get(class_name)
+        real_path = os.path.join(real_base_dir, real_file)
+        
+        if not os.path.exists(real_path):
+            ax.set_title(f'{class_name} (No Real Data)', fontsize=12)
+            continue
+            
+        try:
+            real_data = pd.read_csv(real_path, header=None)
+            real_signal = normalize_signal(real_data.iloc[:, 0].values[:max_length])
+            
+            # Get best synthetic data (using best Pearson column)
+            best_synthetic = best_results[class_name]['pearson']['data']
+            if best_synthetic is None:
+                ax.set_title(f'{class_name} (No Synthetic Data)', fontsize=12)
+                continue
+            
+            # Plot time series
+            ax.plot(time_axis, real_signal, 
+                   label=f'{class_name} Real', linewidth=0.5, alpha=0.8, color='blue')
+            ax.plot(time_axis, best_synthetic, 
+                   label=f'{class_name} Synthetic', linewidth=0.5, 
+                   linestyle='--', alpha=0.8, color='red')
+            
+            # Formatting for each subplot
+            ax.set_title(f'{class_name}', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Sample Index', fontsize=10)
+            ax.set_ylabel('Normalized Amplitude', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=9)
+            
+            # Add metrics as text
+            pcc_value = best_results[class_name]['pearson']['value']
+            col_idx = best_results[class_name]['pearson']['column']
+            ax.text(0.02, 0.98, f'PCC: {pcc_value:.4f}\nCol: {col_idx}', 
+                   transform=ax.transAxes, fontsize=9, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            
+            # Set reasonable y-axis limits
+            ax.set_ylim([-1.1, 1.1])
+            
+        except Exception as e:
+            print(f"Error plotting time series for {class_name}: {str(e)}")
+            ax.set_title(f'{class_name} (Error)', fontsize=12)
+            continue
+    
+    # Overall figure formatting
+    fig.suptitle(f'Time Series Comparison - Best Pearson Columns ({max_length} samples)', 
+                fontsize=18, fontweight='bold')
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.95)
+    plt.savefig('timeseries_comparison_best_columns.png', dpi=300, bbox_inches='tight')
+    plt.show()
 
-        K_xx = rbf_kernel(window_a, window_a, gamma=gamma)
-        K_yy = rbf_kernel(window_b, window_b, gamma=gamma)
-        K_xy = rbf_kernel(window_a, window_b, gamma=gamma)
+def print_best_results_multicolumn(best_results):
+    """Print best results for multicolumn analysis"""
+    print("\n" + "="*80)
+    print("BEST METRIC VALUES FOR EACH CLASS (FFT DOMAIN ANALYSIS)")
+    print("="*80)
+    
+    for class_name, metrics in best_results.items():
+        print(f"\nClass: {class_name}")
+        print("-" * 60)
+        print(f"Best Pearson Correlation: {metrics['pearson']['value']:.6f} (Column: {metrics['pearson']['column']})")
+        print(f"Best Cosine Similarity:   {metrics['cosine']['value']:.6f} (Column: {metrics['cosine']['column']})")
+        print(f"Best KL Divergence:       {metrics['kl_div']['value']:.6f} (Column: {metrics['kl_div']['column']})")
+        print(f"Best MMD:                 {metrics['mmd']['value']:.6f} (Column: {metrics['mmd']['column']})")
 
-        mmd_val = np.mean(K_xx) + np.mean(K_yy) - 2 * np.mean(K_xy)
-        mmd_values.append(mmd_val)
+def main():
+    """Main execution function"""
+    
+    # Configuration - Update these paths according to your directory structure
+    real_base_dir = "CWRU_data"  # Directory containing N.csv, 7BA.csv, etc.
+    synthetic_base_dir = "WGAN-GP/improve"  # Directory containing class_name.csv files with 100 columns
+    
+    class_names = ['N', '14BA', '14IR', '14OR', '7BA', '7IR', '7OR', '21BA', '21IR', '21OR']
+    
+    print("CWRU DATASET SYNTHETIC DATA QUALITY EVALUATION - FFT DOMAIN ANALYSIS")
+    print("=" * 80)
+    print(f"Real data directory: {real_base_dir}")
+    print(f"Synthetic data directory: {synthetic_base_dir}")
+    print(f"Classes to process: {', '.join(class_names)}")
+    print(f"Time series length: 1824 samples")
+    print(f"Evaluation domain: FFT (same as model.py)")
+    print("=" * 80)
+    
+    # Evaluate metrics for all classes using FFT domain comparison
+    best_results = evaluate_class_metrics_multicolumn(real_base_dir, synthetic_base_dir, class_names, max_length=1824)
+    
+    # Print results
+    print_best_results_multicolumn(best_results)
+    
+    # Create individual FFT comparison subplots
+    print(f"\n{'='*80}")
+    print("GENERATING FFT COMPARISON PLOTS")
+    print("="*80)
+    
+    plot_fft_subplots_multicolumn(real_base_dir, best_results, class_names, max_length=1824)
+    
+    # Create time series comparison plot
+    print(f"\n{'='*80}")
+    print("GENERATING TIME SERIES COMPARISON PLOTS")
+    print("="*80)
+    
+    plot_combined_timeseries(real_base_dir, best_results, class_names, max_length=1824)
+    
+    print("\nEvaluation completed successfully!")
+    print("FFT comparison plots saved as: fft_comparison_best_columns.png")
+    print("Time series comparison plots saved as: timeseries_comparison_best_columns.png")
 
-    return np.mean(mmd_values)
-
-
-def compute_all_metrics(signal_dict, fs=12000):
-    keys = list(signal_dict.keys())
-    for i in range(len(keys)):
-        for j in range(i+1, len(keys)):
-            name1, name2 = keys[i], keys[j]
-            arr1, arr2 = signal_dict[name1], signal_dict[name2]
-
-            print(f"\nComparing real vs synthetic:")
-            print(f"Lengths: {len(arr1)} vs {len(arr2)}")
-
-            print(f"Pearson Correlation     : {pearson_corr(arr1, arr2):.4f}")
-            print(f"Cosine Similarity       : {cosine_sim(arr1, arr2):.4f}")
-            print(f"KL Divergence (hist)    : {kl_divergence(arr1, arr2):.4f}")
-            print(f"Maximum Mean Discrepancy: {mmd(arr1, arr2):.6f}")
-signals={
-    'real': real[:48000],  
-    'synthetic': synthetic[:48000]
-}
-compute_all_metrics(signals, fs=12000)
+if __name__ == "__main__":
+    main()
