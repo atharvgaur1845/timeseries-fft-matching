@@ -31,7 +31,7 @@ import time
 
 torch.backends.cudnn.benchmark = True
 path = 'CWRU_data'
-num_classes = 10
+num_classes = 12
 percentage = 10
 num_train_samples = (4800 * percentage) // 100
 num_blocks = 9
@@ -45,7 +45,7 @@ class SingleCSVDataset(Dataset):
     def __init__(self, file_path, seq_len=1824, num_train_samples=1000, num_test_samples=400):
         filename = os.path.splitext(os.path.basename(file_path))[0].replace("_Sensor1", "")
         label_mapping = {
-            "N": 0, "7BA": 1, "7IR": 2, "7OR": 3, "14BA": 4, "14IR": 5, "14OR": 6, "21BA": 7, "21IR": 8, "21OR": 9
+            "N": 0, "7BA": 1, "7IR": 2, "7OR": 3, "14BA": 4, "14IR": 5, "14OR": 6, "21BA": 7, "21IR": 8, "21OR": 9, "BA28" :10, "IR28":11
         }
         
         label = label_mapping.get(filename, -1)
@@ -60,7 +60,7 @@ class SingleCSVDataset(Dataset):
         self.data = torch.tensor(values, dtype=torch.float32)
         self.seq_len = seq_len
 
-        sequences = self._create_sequences(self.data, seq_len, stride=seq_len // 50)
+        sequences = self._create_sequences(self.data, seq_len, stride=seq_len // 200)
         print(f"Number of sequences in {file_path}: {len(sequences)}")
 
         random.seed(42)
@@ -140,7 +140,7 @@ class TCNBlock(nn.Module):
 
 # ---------- New Generator ----------
 class GeneratorTCN(nn.Module):
-    def __init__(self, nz=100, num_classes=10, embed_size=10, num_blocks=9, channels=64, kernel_size=5, dropout=0.05, output_length=1824):
+    def __init__(self, nz=100, num_classes=11, embed_size=10, num_blocks=9, channels=64, kernel_size=5, dropout=0.05, output_length=1824):
         super().__init__()
         self.output_length = output_length
         self.num_classes = num_classes
@@ -150,8 +150,7 @@ class GeneratorTCN(nn.Module):
         self.label_emb = nn.Embedding(num_classes, embed_size)
         
         # Start with a small sequence length to upsample from
-        self.initial_length = 114  # Small initial sequence length
-        
+        self.initial_length = 114  
         # Initial processing to create starting sequence (minimal FC usage)
         self.init_conv = nn.ConvTranspose1d(nz + embed_size, channels, kernel_size=self.initial_length, stride=1, padding=0)
         self.init_bn = nn.BatchNorm1d(channels)
@@ -240,7 +239,7 @@ class GeneratorTCN(nn.Module):
         return self.tanh(x)  # (batch_size, 1, 1824)
 
 class DiscriminatorTCN(nn.Module):
-    def __init__(self, num_classes=10, num_blocks=9, channels=64, kernel_size=5, dropout=0.05):
+    def __init__(self, num_classes=11, num_blocks=9, channels=64, kernel_size=5, dropout=0.05):
         super().__init__()
         self.initial_conv = nn.Conv1d(1, channels, kernel_size=1)
         self.tcn_layers = nn.Sequential(*[TCNBlock(channels, channels, kernel_size, dilation=2**i, dropout=dropout) for i in range(num_blocks)])
@@ -275,7 +274,8 @@ epoch_num = 50
 batch_size = 32
 nz = 100
 cls_coeff = 1
-
+percentage = 20
+num_train_samples = (4800 * percentage) // 100
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # Model Selection
@@ -490,15 +490,14 @@ def plot_ffts_all(original_freqs, original_mags, generated_freqs, generated_mags
     plt.show()
 
 # Main execution
-percentage = 10
+percentage = 20
 num_train_samples = (4800 * percentage) // 100
-weight_path = f'./{num_train_samples}_wgan-True_GeneratorTCN-DiscriminatorTCNG_50.pth'  # Updated filename
+weight_path = f'./{num_train_samples}_wgan-True_GeneratorTCN-DiscriminatorTCNG_50.pth'  
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-GeneratorModel = GeneratorTCN  # Updated to use new GeneratorTCN
-
+GeneratorModel = GeneratorTCN  
 label_mapping = {
-    "N": 0, "7BA": 1, "7IR": 2, "7OR1": 3, "14BA": 4, "14IR": 5, "14OR1": 6, "21BA": 7, "21IR": 8, "21OR1": 9
-}
+            "N": 0, "7BA": 1, "7IR": 2, "7OR": 3, "14BA": 4, "14IR": 5, "14OR": 6, "21BA": 7, "21IR": 8, "21OR": 9, "BA28" :10, "IR28":11
+        }
 
 # Define CSV file path
 results_csv_path = f"{num_train_samples}_generation_results.csv"

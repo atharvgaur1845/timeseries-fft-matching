@@ -59,7 +59,7 @@ def evaluate_class_metrics_multicolumn(real_base_dir, synthetic_base_dir, class_
         'N': 'N.csv',
         '14BA': '14BA.csv', '14IR': '14IR.csv', '14OR': '14OR.csv',
         '7BA': '7BA.csv', '7IR': '7IR.csv', '7OR': '7OR.csv',
-        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv'
+        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv','BA28': 'BA28.csv','IR28':'IR28.csv'
     }
     
     best_results = {}
@@ -161,11 +161,11 @@ def plot_fft_subplots_multicolumn(real_base_dir, best_results, class_names,
         'N': 'N.csv',
         '14BA': '14BA.csv', '14IR': '14IR.csv', '14OR': '14OR.csv',
         '7BA': '7BA.csv', '7IR': '7IR.csv', '7OR': '7OR.csv',
-        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv'
+        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv', 'BA28':'BA28.csv','IR28':'IR28.csv'
     }
     
     # Create subplots: 5 rows x 2 columns for 10 classes
-    fig, axs = plt.subplots(nrows=5, ncols=2, figsize=(20, 20))
+    fig, axs = plt.subplots(nrows=6, ncols=2, figsize=(20, 20))
     axs = axs.flatten()
     
     for i, class_name in enumerate(class_names):
@@ -242,11 +242,11 @@ def plot_combined_timeseries(real_base_dir, best_results, class_names, max_lengt
         'N': 'N.csv',
         '14BA': '14BA.csv', '14IR': '14IR.csv', '14OR': '14OR.csv',
         '7BA': '7BA.csv', '7IR': '7IR.csv', '7OR': '7OR.csv',
-        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv'
+        '21BA': '21BA.csv', '21IR': '21IR.csv', '21OR': '21OR.csv','BA28': 'BA28.csv','IR28':'IR28.csv'
     }
     
     # Create subplots: 5 rows x 2 columns for 10 classes
-    fig, axs = plt.subplots(nrows=5, ncols=2, figsize=(20, 25))
+    fig, axs = plt.subplots(nrows=6, ncols=2, figsize=(20, 25))
     axs = axs.flatten()
     
     time_axis = np.arange(max_length)
@@ -332,9 +332,9 @@ def main():
     
     # Configuration - Update these paths according to your directory structure
     real_base_dir = "CWRU_data"  # Directory containing N.csv, 7BA.csv, etc.
-    synthetic_base_dir = "WGAN-GP/improve"  # Directory containing class_name.csv files with 100 columns
+    synthetic_base_dir = "WGAN-GP/self attention"  # Directory containing class_name.csv files with 100 columns
     
-    class_names = ['N', '14BA', '14IR', '14OR', '7BA', '7IR', '7OR', '21BA', '21IR', '21OR']
+    class_names = ['N', '14BA', '14IR', '14OR', '7BA', '7IR', '7OR', '21BA', '21IR', '21OR','BA28','IR28']
     
     print("CWRU DATASET SYNTHETIC DATA QUALITY EVALUATION - FFT DOMAIN ANALYSIS")
     print("=" * 80)
