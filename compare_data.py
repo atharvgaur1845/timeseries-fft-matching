@@ -332,7 +332,7 @@ def main():
     
     # Configuration - Update these paths according to your directory structure
     real_base_dir = "CWRU_data"  # Directory containing N.csv, 7BA.csv, etc.
-    synthetic_base_dir = "WGAN-GP/self attention"  # Directory containing class_name.csv files with 100 columns
+    synthetic_base_dir = "WGAN-GP/hybrid"  # Directory containing class_name.csv files with 100 columns
     
     class_names = ['N', '14BA', '14IR', '14OR', '7BA', '7IR', '7OR', '21BA', '21IR', '21OR','BA28','IR28']
     
