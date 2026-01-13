@@ -178,14 +178,16 @@ def main():
     labels = [full_dataset[i][1] for i in range(len(full_dataset))]
     labels = np.array(labels)
 
-    results = {c: [] for c in range(NUM_CLASSES)}
+    # Store results: {train_frac: {class: [acc1, acc2, ..., acc10]}}
+    results = {}
 
     for frac in TRAIN_FRACS:
         print(f"\n=== TRAIN FRACTION {int(frac * 100)}% ===")
 
-        per_repeat_acc = {c: [] for c in range(NUM_CLASSES)}
+        per_class_accs = {c: [] for c in range(NUM_CLASSES)}
 
         for r in range(REPEATS):
+            # Random split for each repeat
             splitter = StratifiedShuffleSplit(
                 n_splits=1, train_size=frac, random_state=SEED + r
             )
@@ -206,11 +208,48 @@ def main():
             acc = evaluate_per_class(model, test_loader)
 
             for c in range(NUM_CLASSES):
-                per_repeat_acc[c].append(acc[c])
+                per_class_accs[c].append(acc[c])
 
+        results[frac] = per_class_accs
+        
+        # Print per-repeat summary
         for c in range(NUM_CLASSES):
-            results[c].append(np.mean(per_repeat_acc[c]))
-            print(f"{CLASS_NAMES[c]:6s}: {results[c][-1]:.4f}")
+            avg_acc = np.mean(per_class_accs[c])
+            print(f"{CLASS_NAMES[c]:6s}: {avg_acc:.4f}")
+        
+        # Total accuracy
+        total_avg = sum(np.mean(per_class_accs[c]) for c in range(NUM_CLASSES)) / NUM_CLASSES
+        print(f"Total Accuracy: {total_avg:.4f}")
+            
+
+    # =====================================================
+    # RESULTS TABLE
+    # =====================================================
+    print("\n" + "="*100)
+    print("RESULTS TABLE - Average Accuracy across 10 runs")
+    print("="*100)
+    
+    # Build table data
+    table_data = {}
+    table_data["Class"] = CLASS_NAMES + ["Total"]
+    
+    for frac in TRAIN_FRACS:
+        frac_percent = f"{int(frac * 100)}%"
+        table_data[frac_percent] = []
+        
+        # Per-class averages
+        for c in range(NUM_CLASSES):
+            avg_acc = np.mean(results[frac][c])
+            table_data[frac_percent].append(f"{avg_acc:.4f}")
+        
+        # Total average
+        total_avg = sum(np.mean(results[frac][c]) for c in range(NUM_CLASSES)) / NUM_CLASSES
+        table_data[frac_percent].append(f"{total_avg:.4f}")
+    
+    # Create and print DataFrame
+    df = pd.DataFrame(table_data)
+    print(df.to_string(index=False))
+    print("="*100)
 
     # =====================================================
     # PLOT
@@ -219,7 +258,14 @@ def main():
     x = [int(f * 100) for f in TRAIN_FRACS]
 
     for c in range(NUM_CLASSES):
-        plt.plot(x, results[c], marker="o", label=CLASS_NAMES[c])
+        class_accs = [np.mean(results[frac][c]) for frac in TRAIN_FRACS]
+        plt.plot(x, class_accs, marker="o", linestyle=":", label=CLASS_NAMES[c])
+
+    # Calculate and plot total accuracy
+    total_accuracies = [sum(np.mean(results[frac][c]) for c in range(NUM_CLASSES)) / NUM_CLASSES 
+                        for frac in TRAIN_FRACS]
+    plt.plot(x, total_accuracies, marker="s", linewidth=3, color="red", 
+             label="Total Accuracy", linestyle="-")
 
     plt.xlabel("Training data percentage")
     plt.ylabel("Per-class accuracy")
