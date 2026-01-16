@@ -16,8 +16,8 @@ from sklearn.model_selection import StratifiedShuffleSplit
 # =========================================================
 DATA_DIR = "/home/atharv/Desktop/projects/timeseries-fft-matching/CWRU_data"
 
-SEQ_LEN = 5000          # >= 5000 values
-STRIDE = 5000           # NO overlap
+SEQ_LEN = 1824         # >= 5000 values
+STRIDE = 1824          # NO overlap
 BATCH_SIZE = 32         # keep smaller (sequence is large)
 EPOCHS = 30
 LR = 1e-3
