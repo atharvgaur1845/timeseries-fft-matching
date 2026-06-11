@@ -29,7 +29,7 @@ BATCH_SIZE = 64
 EPOCHS = 30
 LR = 1e-3
 
-TRAIN_FRAC = 0.90                      # fixed 90% regime (change if needed)
+TRAIN_FRAC = 0.80                      # fixed 90% regime (change if needed)
 GEN_FRACS_TOTAL = [i/10 for i in range(0, 10)]  # 0.0 .. 0.9 (generated % of TOTAL train set)
 REPEATS = 10
 

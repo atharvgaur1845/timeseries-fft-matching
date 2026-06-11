@@ -33,7 +33,7 @@ import math
 torch.backends.cudnn.benchmark = True
 
 path = 'CWRU_data'
-num_classes = 12  # Updated to 12 as per your requirement
+num_classes = 12  
 percentage = 10
 num_train_samples = (4800 * percentage) // 100
 num_blocks = 9
